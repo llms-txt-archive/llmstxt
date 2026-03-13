@@ -1,79 +1,108 @@
-# Claude Code Docs Tracker
+# Claude Docs Snapshot Tooling
 
-This repo snapshots the Markdown documentation listed in [Claude Code's `llms.txt`](https://code.claude.com/docs/llms.txt) so a committed baseline can be monitored for upstream changes.
+This repository is the shared tooling repo for archive-style documentation mirrors driven by `llms.txt`.
 
-The crawler is intentionally small:
+It contains:
 
-- written in Go
-- standard library only
-- saves raw Markdown for every URL listed in `llms.txt`
-- stores per-page `Last-Modified` metadata in `snapshot/manifest.json`
-- uses `If-Modified-Since` on later runs when the upstream server supports it
-- writes a deterministic `snapshot/manifest.json` so unchanged runs do not create noisy commits
-- designed to run locally or from GitHub Actions
+- the generic crawler in `cmd/claudecodedocs`
+- the README renderer in `cmd/snapshotreadme`
+- the reusable GitHub workflow in `.github/workflows/snapshot-sync.yml`
+- optional Codex dry-run helpers under `.github/codex` and `.github/workflows/codex-dry-run.yml`
 
-## Repository layout
+The intended consumers are thin snapshot repos such as:
 
-```text
-.
-├── .github/workflows/sync.yml
-├── cmd/claudecodedocs/main.go
-├── snapshot/
-│   ├── manifest.json
-│   ├── pages/code.claude.com/docs/en/*.md
-│   └── source/llms.txt
-└── README.md
-```
+- `claude-code-docs-archive`
+- `claude-platform-docs-archive`
 
-## Run locally
+Those repos should contain only:
 
-```bash
-go run ./cmd/claudecodedocs
-```
+- raw mirrored Markdown files at repo root
+- a generated `README.md`
+- a tiny caller workflow
 
-Useful flags:
+## Crawler behavior
+
+The crawler is stdlib-only and supports common `llms.txt` formats:
+
+- Markdown-link indexes
+- plain URL-per-line indexes
+
+It can write in two layouts:
+
+- `nested`: compatibility mode for the old `source/` + `pages/<host>/...` structure
+- `root`: mirror URLs directly into the output root and write the source index as `llms.txt`
+
+It also supports release-backed conditional fetch state:
+
+- reads a previous `manifest.json` asset with `-previous-manifest`
+- writes a fresh release asset with `-manifest-out`
+- sends both `If-None-Match` and `If-Modified-Since` when prior validators are available
+- only mirrors `.md` URLs from `llms.txt`
+- reports skipped non-Markdown URLs in the manifest asset
+
+## Local usage
+
+Example against Claude Code docs in compatibility mode:
 
 ```bash
 go run ./cmd/claudecodedocs \
   -source https://code.claude.com/docs/llms.txt \
   -out snapshot \
-  -concurrency 8 \
-  -timeout 30s
+  -layout nested \
+  -manifest-out snapshot/manifest.json
 ```
 
-## How the history works
+Example against Anthropic Developer Platform docs in root mode:
 
-Each run:
+```bash
+go run ./cmd/claudecodedocs \
+  -source https://platform.claude.com/llms.txt \
+  -out /tmp/platform-generated \
+  -layout root \
+  -manifest-out /tmp/platform-manifest.json
+```
 
-1. downloads `llms.txt`
-2. extracts every linked URL
-3. fetches each page
-4. mirrors the page content into `snapshot/pages/...`
-5. rewrites `snapshot/manifest.json`
+README rendering example:
 
-If nothing in `snapshot/` changes, the GitHub Actions workflow exits quietly. If something changes, it uploads diff artifacts and can notify Discord without committing anything back to the repo.
+```bash
+go run ./cmd/snapshotreadme \
+  -template templates/snapshot-readme.md.tmpl \
+  -out /tmp/README.md \
+  -title "Claude Platform Docs Archive" \
+  -site-name "Claude Platform Docs" \
+  -site-url "https://platform.claude.com" \
+  -source-url "https://platform.claude.com/llms.txt" \
+  -schedule-label "Hourly at :42 UTC" \
+  -document-count 654 \
+  -skipped-count 3 \
+  -releases-json /tmp/releases.json
+```
 
-## GitHub setup
+## Reusable workflow
 
-1. Create a GitHub repository from this directory or push this directory to an existing repo.
-2. Make sure Actions are enabled for the repo.
-3. Commit the initial `snapshot/` so the workflow has a baseline to compare against.
-4. Add a repository secret named `DISCORD_WEBHOOK_URL` when you're ready to enable notifications.
-5. Keep the default workflow schedule or edit `.github/workflows/sync.yml` if you want a different cadence.
+Snapshot repos should call `.github/workflows/snapshot-sync.yml` with:
 
-The included workflow:
+- `source_url`
+- `site_name`
+- `site_url`
+- `repo_title`
+- `schedule_label`
+- `tool_ref`
 
-- runs every hour and on manual dispatch
-- executes `go test ./...`
-- runs the crawler
-- ignores metadata-only changes when `snapshot/manifest.json` is the only modified file
-- uploads diff artifacts when crawled source files actually change
-- posts a Discord message when a new diff hash is detected and `DISCORD_WEBHOOK_URL` is configured
+The reusable workflow:
+
+1. checks out the caller snapshot repo
+2. checks out this tool repo at `tool_ref`
+3. installs the crawler and README renderer
+4. downloads the latest released `manifest.json` if one exists
+5. crawls into a temp directory
+6. syncs raw Markdown files into the snapshot repo root
+7. renders the generated `README.md`
+8. commits and creates a release only when raw tracked content actually changed
 
 ## Notes
 
-- The workflow only needs read access because it no longer commits back to the repo.
-- The manifest is content-based on purpose, so the schedule alone does not generate commits.
-- `Last-Modified` data is only present when the upstream server sends that header.
-- Discord alert deduplication is best-effort and keyed off the current `snapshot/manifest.json` hash.
-- Because the docs are stored as raw Markdown, normal git diff tools are enough to inspect changes over time.
+- `manifest.json` is a release asset, not a git-tracked file in snapshot repos.
+- Snapshot repos mirror only `.md` URLs listed in `llms.txt`.
+- If any fetch fails, the workflow uploads diagnostics but does not publish a commit or release.
+- Removed Markdown URLs are deleted from the tracked tree on successful syncs.

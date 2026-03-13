@@ -1,0 +1,243 @@
+name: Snapshot Sync
+
+on:
+  workflow_call:
+    inputs:
+      source_url:
+        required: true
+        type: string
+      site_name:
+        required: true
+        type: string
+      site_url:
+        required: true
+        type: string
+      repo_title:
+        required: true
+        type: string
+      schedule_label:
+        required: true
+        type: string
+      tool_ref:
+        required: true
+        type: string
+      release_history_limit:
+        required: false
+        type: number
+        default: 5
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot-sync-${{ github.repository }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out snapshot repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Check out tool repository
+        uses: actions/checkout@v5
+        with:
+          repository: f-pisani/claudecodedocs
+          ref: ${{ inputs.tool_ref }}
+          path: .toolrepo
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          cache: false
+          go-version-file: .toolrepo/go.mod
+
+      - name: Install tool binaries
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          go install ./cmd/claudecodedocs
+          go install ./cmd/snapshotreadme
+        working-directory: .toolrepo
+
+      - name: Resolve latest release state
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" 2>/dev/null || echo '[]')"
+          latest_tag="$(printf '%s' "$release_json" | jq -r '.[0].tag_name // ""')"
+
+          echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
+          printf '%s' "$release_json" > "$RUNNER_TEMP/latest-release.json"
+
+          if [ -n "$latest_tag" ]; then
+            mkdir -p "$RUNNER_TEMP/previous-release"
+            gh release download "$latest_tag" -R "$GITHUB_REPOSITORY" -p manifest.json -D "$RUNNER_TEMP/previous-release" || true
+          fi
+
+      - name: Run crawler
+        id: crawl
+        run: |
+          manifest_args=()
+          if [ -f "$RUNNER_TEMP/previous-release/manifest.json" ]; then
+            manifest_args+=( -previous-manifest "$RUNNER_TEMP/previous-release/manifest.json" )
+          fi
+
+          set +e
+          claudecodedocs \
+            -source "${{ inputs.source_url }}" \
+            -out "$RUNNER_TEMP/generated" \
+            -layout root \
+            -manifest-out "$RUNNER_TEMP/manifest.json" \
+            -concurrency 8 \
+            -timeout 30s \
+            "${manifest_args[@]}" \
+            > "$RUNNER_TEMP/crawl.stdout" \
+            2> "$RUNNER_TEMP/crawl.stderr"
+          exit_code=$?
+          set -e
+
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ -f "$RUNNER_TEMP/manifest.json" ]; then
+            echo "manifest_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "manifest_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload crawl diagnostics
+        if: steps.crawl.outputs.exit_code != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-sync-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/crawl.stdout
+            ${{ runner.temp }}/crawl.stderr
+            ${{ runner.temp }}/manifest.json
+
+      - name: Stop on crawl failure
+        if: steps.crawl.outputs.exit_code != '0'
+        run: |
+          echo "Crawler failed; diagnostics artifact uploaded."
+          cat "$RUNNER_TEMP/crawl.stderr"
+          exit 1
+
+      - name: Sync raw generated files into repo root
+        run: |
+          rsync -a --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.toolrepo/' \
+            --exclude 'README.md' \
+            "$RUNNER_TEMP/generated"/ ./
+
+      - name: Detect raw content changes
+        id: detect
+        run: |
+          if [ -z "$(git status --porcelain -- . ':(exclude).github' ':(exclude).toolrepo' ':(exclude)README.md')" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch release history
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=${{ inputs.release_history_limit }}" > "$RUNNER_TEMP/releases.json"
+
+      - name: Compute release identity
+        if: steps.detect.outputs.changed == 'true'
+        id: release_meta
+        env:
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+        run: |
+          if [ -z "${{ steps.release_state.outputs.latest_tag }}" ]; then
+            release_tag="initial"
+            release_name="Initial release"
+            commit_subject="initial snapshot"
+            published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          else
+            published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            timestamp="$(date -u +"%Y%m%dT%H%M%SZ")"
+            release_tag="snapshot-${timestamp}"
+            release_name="Snapshot $(date -u +"%Y-%m-%d %H:%M UTC")"
+            commit_subject="snapshot ${published_at}"
+          fi
+
+          release_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+          echo "commit_subject=$commit_subject" >> "$GITHUB_OUTPUT"
+          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
+          echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
+
+      - name: Build README release context
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          jq \
+            --arg name "${{ steps.release_meta.outputs.release_name }}" \
+            --arg tag "${{ steps.release_meta.outputs.release_tag }}" \
+            --arg published "${{ steps.release_meta.outputs.published_at }}" \
+            --arg url "${{ steps.release_meta.outputs.release_url }}" \
+            '([{
+              name: $name,
+              tag_name: $tag,
+              published_at: $published,
+              html_url: $url
+            }] + .)' \
+            "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/releases-with-current.json"
+
+      - name: Render generated README
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          document_count="$(jq -r '.document_count' "$RUNNER_TEMP/manifest.json")"
+          skipped_count="$(jq -r '.skipped_count // 0' "$RUNNER_TEMP/manifest.json")"
+
+          snapshotreadme \
+            -template ".toolrepo/templates/snapshot-readme.md.tmpl" \
+            -out "README.md" \
+            -title "${{ inputs.repo_title }}" \
+            -site-name "${{ inputs.site_name }}" \
+            -site-url "${{ inputs.site_url }}" \
+            -source-url "${{ inputs.source_url }}" \
+            -schedule-label "${{ inputs.schedule_label }}" \
+            -document-count "$document_count" \
+            -skipped-count "$skipped_count" \
+            -releases-json "$RUNNER_TEMP/releases-with-current.json"
+
+      - name: Configure git author
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit snapshot update
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          git add .
+          git commit -m "${{ steps.release_meta.outputs.commit_subject }}"
+
+      - name: Push snapshot update
+        if: steps.detect.outputs.changed == 'true'
+        run: git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Create release
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.release_meta.outputs.release_tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${{ steps.release_meta.outputs.release_name }}" \
+            --notes "" \
+            "$RUNNER_TEMP/manifest.json#manifest.json"

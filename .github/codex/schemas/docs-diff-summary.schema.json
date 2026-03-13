@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "commit_title",
+    "commit_body",
+    "release_title",
+    "release_notes_markdown",
+    "key_changes"
+  ],
+  "properties": {
+    "commit_title": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 72,
+      "pattern": "^docs\\(snapshot\\)!?: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{10,68}[A-Za-z0-9`)]$"
+    },
+    "commit_body": {
+      "type": "string",
+      "minLength": 1
+    },
+    "release_title": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 120
+    },
+    "release_notes_markdown": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^## Summary(?:.|\\n)+"
+    },
+    "key_changes": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
