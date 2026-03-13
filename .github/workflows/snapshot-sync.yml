@@ -56,6 +56,7 @@ jobs:
           path: .toolrepo
           fetch-depth: 1
           token: ${{ secrets.tool_repo_token || github.token }}
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -69,6 +70,9 @@ jobs:
           go install ./cmd/claudecodedocs
           go install ./cmd/snapshotreadme
         working-directory: .toolrepo
+
+      - name: Copy README template from tool repo
+        run: cp .toolrepo/templates/snapshot-readme.md.tmpl "$RUNNER_TEMP/snapshot-readme.md.tmpl"
 
       - name: Resolve latest release state
         id: release_state
@@ -137,14 +141,16 @@ jobs:
           rsync -a --delete \
             --exclude '.git/' \
             --exclude '.github/' \
-            --exclude '.toolrepo/' \
             --exclude 'README.md' \
             "$RUNNER_TEMP/generated"/ ./
+
+      - name: Remove tool checkout from snapshot worktree
+        run: rm -rf .toolrepo
 
       - name: Detect raw content changes
         id: detect
         run: |
-          if [ -z "$(git status --porcelain -- . ':(exclude).github' ':(exclude).toolrepo' ':(exclude)README.md')" ]; then
+          if [ -z "$(git status --porcelain -- . ':(exclude).github' ':(exclude)README.md')" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -208,7 +214,7 @@ jobs:
           skipped_count="$(jq -r '.skipped_count // 0' "$RUNNER_TEMP/manifest.json")"
 
           snapshotreadme \
-            -template ".toolrepo/templates/snapshot-readme.md.tmpl" \
+            -template "$RUNNER_TEMP/snapshot-readme.md.tmpl" \
             -out "README.md" \
             -title "${{ inputs.repo_title }}" \
             -site-name "${{ inputs.site_name }}" \
