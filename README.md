@@ -102,6 +102,14 @@ The reusable workflow:
 7. renders the generated `README.md`
 8. commits and creates a release only when raw tracked content actually changed
 
+For non-initial releases, the reusable workflow uses Codex to generate:
+
+- the snapshot commit title and body
+- the release title
+- the release notes markdown
+
+The initial bootstrap release remains deterministic.
+
 If this tooling repo is private, the caller repo must provide a secret with read access to `f-pisani/claudecodedocs` and pass it to the reusable workflow as `tool_repo_token`.
 
 ## Notes

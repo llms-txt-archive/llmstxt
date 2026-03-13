@@ -1,4 +1,4 @@
-You are analyzing a documentation snapshot diff for Claude Code docs.
+You are analyzing a documentation snapshot diff for an llms.txt-driven documentation archive repository.
 
 The current working directory contains:
 
@@ -6,12 +6,13 @@ The current working directory contains:
 - `snapshot-diffstat.txt`: per-file diff summary
 - `snapshot.patch`: full patch for the changed files
 - `snapshot/manifest.json`: the generated manifest for the new snapshot
+- `snapshot-context.json`: metadata about the archive repo and source site
 
 Your job is to produce high-signal release-writing material from the diff.
 
 Requirements:
 
-1. Read the status file, diffstat, and patch before writing.
+1. Read `snapshot-context.json`, the status file, diffstat, and patch before writing.
 2. Focus on user-visible documentation changes, not internal repo mechanics.
 3. Treat this as a real docs snapshot change set. You are writing materials for snapshot changes only, not for source-code changes.
 4. Prefer concrete statements over vague summary language.

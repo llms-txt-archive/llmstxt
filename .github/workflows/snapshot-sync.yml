@@ -28,6 +28,8 @@ on:
     secrets:
       tool_repo_token:
         required: false
+      OPENAI_API_KEY:
+        required: false
 
 permissions:
   contents: write
@@ -40,6 +42,9 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CODEX_MODEL: ${{ vars.CODEX_MODEL || 'gpt-5.4' }}
+      CODEX_EFFORT: ${{ vars.CODEX_EFFORT || 'high' }}
 
     steps:
       - name: Check out snapshot repository
@@ -71,8 +76,11 @@ jobs:
           go install ./cmd/snapshotreadme
         working-directory: .toolrepo
 
-      - name: Copy README template from tool repo
-        run: cp .toolrepo/templates/snapshot-readme.md.tmpl "$RUNNER_TEMP/snapshot-readme.md.tmpl"
+      - name: Copy workflow assets from tool repo
+        run: |
+          cp .toolrepo/templates/snapshot-readme.md.tmpl "$RUNNER_TEMP/snapshot-readme.md.tmpl"
+          cp .toolrepo/.github/codex/prompts/docs-diff-summary.md "$RUNNER_TEMP/codex-docs-diff-summary.md"
+          cp .toolrepo/.github/codex/schemas/docs-diff-summary.schema.json "$RUNNER_TEMP/codex-docs-diff-summary.schema.json"
 
       - name: Resolve latest release state
         id: release_state
@@ -152,7 +160,7 @@ jobs:
       - name: Detect raw content changes
         id: detect
         run: |
-          if [ -z "$(git status --porcelain -- . ':(exclude).github' ':(exclude)README.md')" ]; then
+          if [ -z "$(git status --porcelain -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo')" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -166,41 +174,138 @@ jobs:
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=${{ inputs.release_history_limit }}" > "$RUNNER_TEMP/releases.json"
 
-      - name: Compute release identity
+      - name: Compute release envelope
         if: steps.detect.outputs.changed == 'true'
-        id: release_meta
+        id: release_envelope
         env:
           GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
+          published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           if [ -z "${{ steps.release_state.outputs.latest_tag }}" ]; then
+            codex_enabled="false"
             release_tag="initial"
-            release_name="Initial release"
-            commit_subject="initial snapshot"
-            published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           else
-            published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            codex_enabled="true"
             timestamp="$(date -u +"%Y%m%dT%H%M%SZ")"
             release_tag="snapshot-${timestamp}"
-            release_name="Snapshot $(date -u +"%Y-%m-%d %H:%M UTC")"
-            commit_subject="snapshot ${published_at}"
           fi
 
           release_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
 
+          echo "codex_enabled=$codex_enabled" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
-          echo "commit_subject=$commit_subject" >> "$GITHUB_OUTPUT"
           echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
           echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Codex input
+        if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/codex-input/snapshot"
+
+          git status --porcelain -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot-status.txt"
+          git diff --stat -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot-diffstat.txt"
+          git diff -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot.patch"
+
+          cp "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/codex-input/snapshot/manifest.json"
+
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg site_name "${{ inputs.site_name }}" \
+            --arg site_url "${{ inputs.site_url }}" \
+            --arg source_url "${{ inputs.source_url }}" \
+            --arg release_tag "${{ steps.release_envelope.outputs.release_tag }}" \
+            --arg published_at "${{ steps.release_envelope.outputs.published_at }}" \
+            '{
+              repository: $repository,
+              site_name: $site_name,
+              site_url: $site_url,
+              source_url: $source_url,
+              release_tag: $release_tag,
+              published_at: $published_at
+            }' > "$RUNNER_TEMP/codex-input/snapshot-context.json"
+
+      - name: Validate Codex configuration
+        if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY is required for non-initial snapshot releases." >&2
+            exit 1
+          fi
+
+      - name: Run Codex release generation
+        if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: ${{ runner.temp }}/codex-docs-diff-summary.md
+          output-file: ${{ runner.temp }}/codex-docs-summary.json
+          sandbox: read-only
+          safety-strategy: drop-sudo
+          codex-args: >-
+            ["--model","${{ env.CODEX_MODEL }}","-c","model_reasoning_effort=\"${{ env.CODEX_EFFORT }}\"","--skip-git-repo-check","--ephemeral","--cd","${{ runner.temp }}/codex-input","--output-schema","${{ runner.temp }}/codex-docs-diff-summary.schema.json"]
+
+      - name: Split Codex outputs
+        if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
+        run: |
+          jq -r '.commit_title' "$RUNNER_TEMP/codex-docs-summary.json" > "$RUNNER_TEMP/codex-commit-title.txt"
+          jq -r '.commit_body' "$RUNNER_TEMP/codex-docs-summary.json" > "$RUNNER_TEMP/codex-commit-body.txt"
+          jq -r '.release_title' "$RUNNER_TEMP/codex-docs-summary.json" > "$RUNNER_TEMP/codex-release-title.txt"
+          jq -r '.release_notes_markdown' "$RUNNER_TEMP/codex-docs-summary.json" > "$RUNNER_TEMP/codex-release-notes.md"
+          jq -r '.key_changes[]' "$RUNNER_TEMP/codex-docs-summary.json" > "$RUNNER_TEMP/codex-key-changes.txt"
+
+      - name: Upload Codex outputs
+        if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-codex-output-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codex-docs-summary.json
+            ${{ runner.temp }}/codex-commit-title.txt
+            ${{ runner.temp }}/codex-commit-body.txt
+            ${{ runner.temp }}/codex-release-title.txt
+            ${{ runner.temp }}/codex-release-notes.md
+            ${{ runner.temp }}/codex-key-changes.txt
+
+      - name: Finalize release metadata
+        if: steps.detect.outputs.changed == 'true'
+        id: release_meta
+        run: |
+          commit_message_path="$RUNNER_TEMP/commit-message.txt"
+          release_notes_path="$RUNNER_TEMP/release-notes.md"
+
+          if [ "${{ steps.release_envelope.outputs.codex_enabled }}" = "true" ]; then
+            commit_subject="$(cat "$RUNNER_TEMP/codex-commit-title.txt")"
+            commit_body="$(cat "$RUNNER_TEMP/codex-commit-body.txt")"
+            release_name="$(cat "$RUNNER_TEMP/codex-release-title.txt")"
+            cp "$RUNNER_TEMP/codex-release-notes.md" "$release_notes_path"
+          else
+            commit_subject="initial snapshot"
+            commit_body=""
+            release_name="Initial release"
+            printf '## Summary\n\nInitial automated snapshot release.\n' > "$release_notes_path"
+          fi
+
+          {
+            printf '%s\n' "$commit_subject"
+            if [ -n "$commit_body" ]; then
+              printf '\n%s\n' "$commit_body"
+            fi
+          } > "$commit_message_path"
+
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+          echo "commit_message_path=$commit_message_path" >> "$GITHUB_OUTPUT"
+          echo "release_notes_path=$release_notes_path" >> "$GITHUB_OUTPUT"
 
       - name: Build README release context
         if: steps.detect.outputs.changed == 'true'
         run: |
           jq \
             --arg name "${{ steps.release_meta.outputs.release_name }}" \
-            --arg tag "${{ steps.release_meta.outputs.release_tag }}" \
-            --arg published "${{ steps.release_meta.outputs.published_at }}" \
-            --arg url "${{ steps.release_meta.outputs.release_url }}" \
+            --arg tag "${{ steps.release_envelope.outputs.release_tag }}" \
+            --arg published "${{ steps.release_envelope.outputs.published_at }}" \
+            --arg url "${{ steps.release_envelope.outputs.release_url }}" \
             '([{
               name: $name,
               tag_name: $tag,
@@ -237,7 +342,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: |
           git add .
-          git commit -m "${{ steps.release_meta.outputs.commit_subject }}"
+          git commit -F "${{ steps.release_meta.outputs.commit_message_path }}"
 
       - name: Push snapshot update
         if: steps.detect.outputs.changed == 'true'
@@ -248,8 +353,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.release_meta.outputs.release_tag }}" \
+          gh release create "${{ steps.release_envelope.outputs.release_tag }}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "${{ steps.release_meta.outputs.release_name }}" \
-            --notes "" \
+            --notes-file "${{ steps.release_meta.outputs.release_notes_path }}" \
             "$RUNNER_TEMP/manifest.json#manifest.json"
