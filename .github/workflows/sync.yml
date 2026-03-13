@@ -112,37 +112,35 @@ jobs:
             exit 0
           fi
 
-          python3 - <<'PY' > discord-payload.json
-import json
-import os
-from pathlib import Path
+          status_block="$(sed 's/^...//' snapshot-status.txt | sed 's/^/- /' | head -n 12)"
+          diffstat_block="$(head -n 12 snapshot-diffstat.txt)"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-status_lines = []
-for raw_line in Path("snapshot-status.txt").read_text().splitlines():
-    cleaned = raw_line[3:] if len(raw_line) > 3 else raw_line
-    status_lines.append(f"- {cleaned}")
+          {
+            printf 'claude code docs diff detected\n'
+            printf 'repo: %s\n' "$GITHUB_REPOSITORY"
+            printf 'branch: %s\n' "$GITHUB_REF_NAME"
+            printf 'changed files: %s\n' "$CHANGED_FILES"
+            printf 'manifest sha: %.12s\n' "$MANIFEST_SHA"
+            printf 'run: %s\n' "$run_url"
+            printf '\nchanged paths:\n'
 
-diffstat_lines = Path("snapshot-diffstat.txt").read_text().splitlines()
+            if [ -n "$status_block" ]; then
+              printf '%s\n' "$status_block"
+            else
+              printf '%s\n' '- no changed paths captured'
+            fi
 
-status_block = "\n".join(status_lines[:12]) or "- no changed paths captured"
-diffstat_block = "\n".join(diffstat_lines[:12]) or "no diffstat captured"
-run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+            printf '\ndiffstat:\n'
 
-content = (
-    "claude code docs diff detected\n"
-    f"repo: {os.environ['GITHUB_REPOSITORY']}\n"
-    f"branch: {os.environ['GITHUB_REF_NAME']}\n"
-    f"changed files: {os.environ['CHANGED_FILES']}\n"
-    f"manifest sha: {os.environ['MANIFEST_SHA'][:12]}\n"
-    f"run: {run_url}\n\n"
-    "changed paths:\n"
-    f"{status_block}\n\n"
-    "diffstat:\n"
-    f"{diffstat_block}"
-)
+            if [ -n "$diffstat_block" ]; then
+              printf '%s\n' "$diffstat_block"
+            else
+              printf '%s\n' 'no diffstat captured'
+            fi
+          } > discord-message.txt
 
-print(json.dumps({"content": content[:1900]}))
-PY
+          jq -Rs '{content: .[0:1900]}' discord-message.txt > discord-payload.json
 
           curl -fsS \
             -H "Content-Type: application/json" \
