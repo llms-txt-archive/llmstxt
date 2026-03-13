@@ -25,49 +25,63 @@ runs:
         SUMMARY_JSON: ${{ inputs.output_file }}
       run: |
         set -euo pipefail
-        if ! command -v jq >/dev/null 2>&1; then
-          echo "jq is required" >&2
-          exit 1
-        fi
-        title=$(jq -r '.commit_title // empty' "$SUMMARY_JSON")
-        release_title=$(jq -r '.release_title // empty' "$SUMMARY_JSON")
-        notes=$(jq -r '.release_notes_markdown // empty' "$SUMMARY_JSON")
-        key_count=$(jq '(.key_changes // []) | length' "$SUMMARY_JSON")
+        python3 - "$SUMMARY_JSON" <<'PY'
+        import json
+        import re
+        import sys
+        from pathlib import Path
 
-        errors=()
-        if [[ -z "$title" || ! "$title" =~ ^sync:\ [A-Za-z0-9\`\(\)][A-Za-z0-9\`\(\),/&\'\ .-]{4,62}[A-Za-z0-9\`\)]$ ]]; then
-          errors+=("commit_title must match the required 'sync: <finished phrase>' format")
-        fi
-        # Reject dangling suffixes/placeholder fragments
-        last_word=${title##* }
-        case "${last_word,,}" in
-          +|/|:|-|and|or|to|into|with|for|new|focused|dedicated)
-            errors+=("commit_title ends with an invalid suffix: $last_word")
-            ;;
-        esac
-        if [[ "$release_title" =~ (in\ progress|analysis\ in\ progress|snapshot\ diff\ analysis|inspect\ snapshot\ diff\ inputs) ]]; then
-          errors+=("release_title contains placeholder text")
-        fi
-        if [[ "$notes" =~ (in\ progress|analysis\ in\ progress|snapshot\ diff\ analysis|inspect\ snapshot\ diff\ inputs) ]]; then
-          errors+=("release_notes_markdown contains placeholder text")
-        fi
-        # Require core sections
-        for sec in "## Summary" "## Added Docs" "## Updated Docs"; do
-          if ! grep -Fq "$sec" <<<"$notes"; then
-            errors+=("release_notes_markdown missing section: $sec")
-          fi
-        done
-        if (( key_count < 3 )); then
-          errors+=("key_changes must include at least 3 items")
-        fi
-        if jq -r '.key_changes[]? // empty' "$SUMMARY_JSON" | grep -Eiq '^(inspect|review|draft)\b'; then
-          errors+=("key_changes contains placeholder task text")
-        fi
+        path = Path(sys.argv[1])
+        errors = []
 
-        if (( ${#errors[@]} )); then
-          printf '%s\n' "${errors[@]}" >&2
-          exit 1
-        fi
+        try:
+            obj = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # pragma: no cover - runtime guard
+            print(f"invalid JSON: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        title = obj.get("commit_title", "")
+        release_title = obj.get("release_title", "")
+        notes = obj.get("release_notes_markdown", "")
+        key_changes = obj.get("key_changes", [])
+
+        if not re.match(r"^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,62}[A-Za-z0-9`)]$", title):
+            errors.append("commit_title must match the required 'sync: <finished phrase>' format")
+
+        suffix = title.removeprefix("sync: ").strip().lower()
+        forbidden_suffixes = {
+            "+", "/", ":", "-", "and", "or", "to", "into", "with", "for",
+            "new", "focused", "dedicated",
+        }
+        if suffix in forbidden_suffixes or suffix.endswith(" +"):
+            errors.append("commit_title ends with a dangling or invalid suffix")
+        if suffix.split() and suffix.split()[-1] in forbidden_suffixes:
+            errors.append("commit_title ends with a dangling final word")
+
+        placeholder_phrases = (
+            "in progress",
+            "analysis in progress",
+            "inspect snapshot diff inputs",
+            "snapshot diff analysis",
+        )
+        if any(phrase in release_title.lower() for phrase in placeholder_phrases):
+            errors.append("release_title contains placeholder text")
+        if any(phrase in notes.lower() for phrase in placeholder_phrases):
+            errors.append("release_notes_markdown contains placeholder text")
+
+        for section in ("## Summary", "## Added Docs", "## Updated Docs"):
+            if section not in notes:
+                errors.append(f"release_notes_markdown missing section: {section}")
+
+        if len(key_changes) < 3:
+            errors.append("key_changes must include at least 3 items")
+        if key_changes and all(str(change).lower().startswith(("inspect", "review", "draft")) for change in key_changes):
+            errors.append("key_changes contains placeholder task text")
+
+        if errors:
+            print("\n".join(errors), file=sys.stderr)
+            sys.exit(1)
+        PY
     - id: split
       name: Split outputs
       shell: bash
