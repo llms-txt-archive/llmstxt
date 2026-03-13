@@ -255,6 +255,28 @@ func TestEnsureMarkdownResponseAcceptsMarkdown(t *testing.T) {
 	}
 }
 
+func TestEnsureMarkdownResponseAcceptsCapturedSkillsMarkdown(t *testing.T) {
+	err := ensureMarkdownResponse(
+		"200 OK",
+		"",
+		nil,
+		[]byte(
+			"> ## Documentation Index\n"+
+				"> Fetch the complete documentation index at: https://code.claude.com/docs/llms.txt\n"+
+				"> Use this file to discover all available pages before exploring further.\n\n"+
+				"# Extend Claude with skills\n\n"+
+				"```python\n"+
+				"html = '''<html><head>\n"+
+				"<title>Example</title>\n"+
+				"</head><body></body></html>'''\n"+
+				"```\n",
+		),
+	)
+	if err != nil {
+		t.Fatalf("ensureMarkdownResponse() error = %v", err)
+	}
+}
+
 func TestWriteUnexpectedContentDiagnostic(t *testing.T) {
 	diagnosticsDir := t.TempDir()
 	unexpected := &unexpectedContentError{

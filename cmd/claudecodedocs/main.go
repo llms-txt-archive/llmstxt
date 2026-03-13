@@ -571,7 +571,8 @@ func looksLikeHTMLDocument(body []byte) bool {
 	lower := strings.ToLower(trimmed)
 	return strings.HasPrefix(lower, "<!doctype html") ||
 		strings.HasPrefix(lower, "<html") ||
-		(strings.Contains(lower, "<head") && strings.Contains(lower, "</html>"))
+		strings.HasPrefix(lower, "<head") ||
+		strings.HasPrefix(lower, "<body")
 }
 
 func buildUserAgent() string {
