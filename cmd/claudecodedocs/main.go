@@ -23,12 +23,13 @@ import (
 )
 
 const (
-	defaultTimeout   = 30 * time.Second
-	defaultWorkers   = 8
-	defaultLayout    = "nested"
-	layoutRoot       = "root"
-	layoutNested     = "nested"
-	nonMarkdownReason = "non_markdown"
+	defaultTimeout        = 30 * time.Second
+	defaultWorkers        = 8
+	defaultLayout         = "nested"
+	markdownFetchAttempts = 3
+	layoutRoot            = "root"
+	layoutNested          = "nested"
+	nonMarkdownReason     = "non_markdown"
 )
 
 var markdownLinkPattern = regexp.MustCompile(`\((https?://[^)\s]+)\)`)
@@ -40,6 +41,7 @@ type config struct {
 	layout               string
 	previousManifestPath string
 	manifestOut          string
+	diagnosticsDir       string
 	timeout              time.Duration
 	concurrency          int
 }
@@ -55,8 +57,9 @@ type fetchResult struct {
 }
 
 type fetchFailure struct {
-	URL   string `json:"url"`
-	Error string `json:"error"`
+	URL            string `json:"url"`
+	Error          string `json:"error"`
+	DiagnosticPath string `json:"diagnostic_path,omitempty"`
 }
 
 type manifest struct {
@@ -90,6 +93,14 @@ type partialSyncError struct {
 	failures []fetchFailure
 }
 
+type unexpectedContentError struct {
+	message     string
+	status      string
+	contentType string
+	headers     map[string][]string
+	body        []byte
+}
+
 func (e *partialSyncError) Error() string {
 	if len(e.failures) == 0 {
 		return "partial sync"
@@ -102,6 +113,10 @@ func (e *partialSyncError) Error() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func (e *unexpectedContentError) Error() string {
+	return e.message
 }
 
 func main() {
@@ -121,6 +136,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.layout, "layout", defaultLayout, "output layout: root or nested")
 	flag.StringVar(&cfg.previousManifestPath, "previous-manifest", "", "path to a previously released manifest.json")
 	flag.StringVar(&cfg.manifestOut, "manifest-out", "", "path where the fresh manifest.json is written")
+	flag.StringVar(&cfg.diagnosticsDir, "diagnostics-dir", "", "directory where fetch diagnostics are written on failure")
 	flag.DurationVar(&cfg.timeout, "timeout", defaultTimeout, "HTTP timeout per request")
 	flag.IntVar(&cfg.concurrency, "concurrency", defaultWorkers, "maximum number of concurrent fetches")
 	flag.Parse()
@@ -175,7 +191,7 @@ func run(cfg config) error {
 		return err
 	}
 
-	documents, failures := fetchDocuments(client, cfg.layout, docURLs, cfg.concurrency, previousDocuments)
+	documents, failures := fetchDocuments(client, cfg.layout, cfg.diagnosticsDir, docURLs, cfg.concurrency, previousDocuments)
 
 	manifestData := buildManifest(sourceResult, documents, skipped, failures)
 	if err := writeManifest(cfg.manifestOut, manifestData); err != nil {
@@ -329,7 +345,7 @@ func previousDocumentsByURL(manifestData *manifest) map[string]manifestEntry {
 	return documents
 }
 
-func fetchDocuments(client *http.Client, layout string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
+func fetchDocuments(client *http.Client, layout string, diagnosticsDir string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
 	type job struct {
 		index int
 		url   string
@@ -361,8 +377,18 @@ func fetchDocuments(client *http.Client, layout string, docURLs []string, concur
 				previous := previousDocuments[job.url]
 				result, err := fetchDocument(client, job.url, relativePath, previous)
 				if err != nil {
+					failure := fetchFailure{URL: job.url, Error: err.Error()}
+					var unexpected *unexpectedContentError
+					if errors.As(err, &unexpected) {
+						diagnosticPath, diagnosticErr := writeUnexpectedContentDiagnostic(diagnosticsDir, job.url, relativePath, unexpected)
+						if diagnosticErr != nil {
+							failure.Error = fmt.Sprintf("%s (failed to write diagnostic: %v)", failure.Error, diagnosticErr)
+						} else {
+							failure.DiagnosticPath = diagnosticPath
+						}
+					}
 					mu.Lock()
-					failures = append(failures, fetchFailure{URL: job.url, Error: err.Error()})
+					failures = append(failures, failure)
 					mu.Unlock()
 					continue
 				}
@@ -396,43 +422,58 @@ func fetchDocuments(client *http.Client, layout string, docURLs []string, concur
 }
 
 func fetchDocument(client *http.Client, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
-	body, contentType, lastModifiedAt, etag, notModified, err := fetchURL(client, rawURL, previous.LastModifiedAt, previous.ETag)
-	if err != nil {
-		return fetchResult{}, err
-	}
-
-	if notModified {
-		body, err = readExistingFile(relativePath)
-		if err != nil {
-			return fetchResult{}, err
-		}
-	}
-
 	requireMarkdown, err := isMarkdownURL(rawURL)
 	if err != nil {
 		return fetchResult{}, err
 	}
+
+	attempts := 1
 	if requireMarkdown {
-		if err := ensureMarkdownResponse(rawURL, contentType, body); err != nil {
-			return fetchResult{}, err
-		}
+		attempts = markdownFetchAttempts
 	}
 
-	return fetchResult{
-		URL:            rawURL,
-		RelativePath:   relativePath,
-		Body:           body,
-		SHA256:         hashBytes(body),
-		Bytes:          len(body),
-		LastModifiedAt: lastModifiedAt,
-		ETag:           etag,
-	}, nil
+	for attempt := 0; attempt < attempts; attempt++ {
+		body, status, contentType, headers, lastModifiedAt, etag, notModified, err := fetchURL(client, rawURL, previous.LastModifiedAt, previous.ETag)
+		if err != nil {
+			return fetchResult{}, err
+		}
+
+		if notModified {
+			body, err = readExistingFile(relativePath)
+			if err != nil {
+				return fetchResult{}, err
+			}
+		}
+
+		if requireMarkdown {
+			if err := ensureMarkdownResponse(status, contentType, headers, body); err != nil {
+				var unexpected *unexpectedContentError
+				if errors.As(err, &unexpected) && !notModified && attempt+1 < attempts {
+					time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+					continue
+				}
+				return fetchResult{}, err
+			}
+		}
+
+		return fetchResult{
+			URL:            rawURL,
+			RelativePath:   relativePath,
+			Body:           body,
+			SHA256:         hashBytes(body),
+			Bytes:          len(body),
+			LastModifiedAt: lastModifiedAt,
+			ETag:           etag,
+		}, nil
+	}
+
+	return fetchResult{}, fmt.Errorf("failed to fetch %s", rawURL)
 }
 
-func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string, previousETag string) ([]byte, string, string, string, bool, error) {
+func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string, previousETag string) ([]byte, string, string, map[string][]string, string, string, bool, error) {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, "", "", "", false, err
+		return nil, "", "", nil, "", "", false, err
 	}
 
 	req.Header.Set("User-Agent", buildUserAgent())
@@ -446,13 +487,15 @@ func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", "", "", false, err
+		return nil, "", "", nil, "", "", false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
 		return nil,
 			"",
+			"",
+			nil,
 			coalesceValidator(normalizeLastModified(resp.Header.Get("Last-Modified")), previousLastModifiedAt),
 			coalesceValidator(normalizeETag(resp.Header.Get("ETag")), previousETag),
 			true,
@@ -460,25 +503,33 @@ func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string,
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", "", "", false, fmt.Errorf("unexpected HTTP %s", resp.Status)
+		return nil, "", "", nil, "", "", false, fmt.Errorf("unexpected HTTP %s", resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, "", "", "", false, err
+		return nil, "", "", nil, "", "", false, err
 	}
 
 	return body,
+		resp.Status,
 		strings.TrimSpace(resp.Header.Get("Content-Type")),
+		copyHeader(resp.Header),
 		normalizeLastModified(resp.Header.Get("Last-Modified")),
 		normalizeETag(resp.Header.Get("ETag")),
 		false,
 		nil
 }
 
-func ensureMarkdownResponse(rawURL string, contentType string, body []byte) error {
+func ensureMarkdownResponse(status string, contentType string, headers map[string][]string, body []byte) error {
 	if looksLikeHTMLDocument(body) {
-		return fmt.Errorf("expected markdown response but received HTML document")
+		return &unexpectedContentError{
+			message:     "expected markdown response but received HTML document",
+			status:      status,
+			contentType: contentType,
+			headers:     headers,
+			body:        append([]byte(nil), body...),
+		}
 	}
 
 	if contentType == "" {
@@ -487,10 +538,28 @@ func ensureMarkdownResponse(rawURL string, contentType string, body []byte) erro
 
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
-		return fmt.Errorf("expected markdown response but received %s", mediaType)
+		return &unexpectedContentError{
+			message:     fmt.Sprintf("expected markdown response but received %s", mediaType),
+			status:      status,
+			contentType: contentType,
+			headers:     headers,
+			body:        append([]byte(nil), body...),
+		}
 	}
 
 	return nil
+}
+
+func copyHeader(header http.Header) map[string][]string {
+	if len(header) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string][]string, len(header))
+	for key, values := range header {
+		cloned[key] = append([]string(nil), values...)
+	}
+	return cloned
 }
 
 func looksLikeHTMLDocument(body []byte) bool {
@@ -611,6 +680,62 @@ func readExistingFile(relativePath string) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+func writeUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, relativePath string, unexpected *unexpectedContentError) (string, error) {
+	if diagnosticsDir == "" {
+		return "", nil
+	}
+
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(unexpected.contentType, ";")[0]))
+	bodyExtension := ".txt"
+	if mediaType == "text/html" || mediaType == "application/xhtml+xml" || looksLikeHTMLDocument(unexpected.body) {
+		bodyExtension = ".html"
+	}
+
+	relativePath = filepath.ToSlash(relativePath)
+	bodyRelativePath := relativePath + ".unexpected-content" + bodyExtension
+	metaRelativePath := relativePath + ".unexpected-content.json"
+	bodyPath := filepath.Join(diagnosticsDir, filepath.FromSlash(bodyRelativePath))
+	metaPath := filepath.Join(diagnosticsDir, filepath.FromSlash(metaRelativePath))
+
+	if err := os.MkdirAll(filepath.Dir(bodyPath), 0o755); err != nil {
+		return "", fmt.Errorf("create diagnostics directory: %w", err)
+	}
+
+	if err := os.WriteFile(bodyPath, unexpected.body, 0o644); err != nil {
+		return "", fmt.Errorf("write diagnostic body: %w", err)
+	}
+
+	metadata := struct {
+		URL          string              `json:"url"`
+		RelativePath string              `json:"relative_path"`
+		Error        string              `json:"error"`
+		Status       string              `json:"status,omitempty"`
+		ContentType  string              `json:"content_type,omitempty"`
+		Headers      map[string][]string `json:"headers,omitempty"`
+		BodyPath     string              `json:"body_path"`
+	}{
+		URL:          rawURL,
+		RelativePath: relativePath,
+		Error:        unexpected.message,
+		Status:       unexpected.status,
+		ContentType:  unexpected.contentType,
+		Headers:      unexpected.headers,
+		BodyPath:     bodyRelativePath,
+	}
+
+	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal diagnostic metadata: %w", err)
+	}
+	metadataBytes = append(metadataBytes, '\n')
+
+	if err := os.WriteFile(metaPath, metadataBytes, 0o644); err != nil {
+		return "", fmt.Errorf("write diagnostic metadata: %w", err)
+	}
+
+	return metaRelativePath, nil
 }
 
 func buildManifest(source fetchResult, documents []fetchResult, skipped []skippedEntry, failures []fetchFailure) manifest {

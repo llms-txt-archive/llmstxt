@@ -1,8 +1,13 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -225,8 +230,9 @@ func TestNormalizeETag(t *testing.T) {
 
 func TestEnsureMarkdownResponseRejectsHTML(t *testing.T) {
 	err := ensureMarkdownResponse(
-		"https://platform.claude.com/docs/en/get-started.md",
+		"200 OK",
 		"text/html; charset=utf-8",
+		map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
 		[]byte("<!DOCTYPE html><html><head><title>Not Found</title></head><body></body></html>"),
 	)
 	if err == nil {
@@ -239,11 +245,84 @@ func TestEnsureMarkdownResponseRejectsHTML(t *testing.T) {
 
 func TestEnsureMarkdownResponseAcceptsMarkdown(t *testing.T) {
 	err := ensureMarkdownResponse(
-		"https://code.claude.com/docs/en/overview.md",
+		"200 OK",
 		"text/markdown; charset=utf-8",
+		map[string][]string{"Content-Type": {"text/markdown; charset=utf-8"}},
 		[]byte("# Overview\n\nReal markdown content.\n"),
 	)
 	if err != nil {
 		t.Fatalf("ensureMarkdownResponse() error = %v", err)
+	}
+}
+
+func TestWriteUnexpectedContentDiagnostic(t *testing.T) {
+	diagnosticsDir := t.TempDir()
+	unexpected := &unexpectedContentError{
+		message:     "expected markdown response but received HTML document",
+		status:      "200 OK",
+		contentType: "text/html; charset=utf-8",
+		headers:     map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
+		body:        []byte("<!DOCTYPE html><html><body>bad html</body></html>"),
+	}
+
+	diagnosticPath, err := writeUnexpectedContentDiagnostic(
+		diagnosticsDir,
+		"https://example.com/docs/skills.md",
+		"docs/skills.md",
+		unexpected,
+	)
+	if err != nil {
+		t.Fatalf("writeUnexpectedContentDiagnostic() error = %v", err)
+	}
+
+	wantDiagnosticPath := "docs/skills.md.unexpected-content.json"
+	if diagnosticPath != wantDiagnosticPath {
+		t.Fatalf("writeUnexpectedContentDiagnostic() path = %q, want %q", diagnosticPath, wantDiagnosticPath)
+	}
+
+	bodyPath := filepath.Join(diagnosticsDir, "docs", "skills.md.unexpected-content.html")
+	body, err := os.ReadFile(bodyPath)
+	if err != nil {
+		t.Fatalf("read diagnostic body: %v", err)
+	}
+	if got := string(body); got != string(unexpected.body) {
+		t.Fatalf("diagnostic body = %q, want %q", got, string(unexpected.body))
+	}
+
+	metadataPath := filepath.Join(diagnosticsDir, filepath.FromSlash(diagnosticPath))
+	metadata, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("read diagnostic metadata: %v", err)
+	}
+	if !strings.Contains(string(metadata), `"body_path": "docs/skills.md.unexpected-content.html"`) {
+		t.Fatalf("diagnostic metadata missing body path: %s", string(metadata))
+	}
+}
+
+func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch attempts.Add(1) {
+		case 1:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte("<!DOCTYPE html><html><body>temporary html</body></html>"))
+		default:
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			_, _ = w.Write([]byte("# Real markdown\n"))
+		}
+	}))
+	defer server.Close()
+
+	result, err := fetchDocument(http.DefaultClient, server.URL+"/skills.md", "skills.md", manifestEntry{})
+	if err != nil {
+		t.Fatalf("fetchDocument() error = %v", err)
+	}
+
+	if got := string(result.Body); got != "# Real markdown\n" {
+		t.Fatalf("fetchDocument() body = %q, want markdown body", got)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("fetchDocument() attempts = %d, want 2", got)
 	}
 }

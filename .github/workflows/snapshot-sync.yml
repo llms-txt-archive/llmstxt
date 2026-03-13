@@ -104,6 +104,7 @@ jobs:
             -out "$RUNNER_TEMP/generated" \
             -layout root \
             -manifest-out "$RUNNER_TEMP/manifest.json" \
+            -diagnostics-dir "$RUNNER_TEMP/crawl-diagnostics" \
             -concurrency 8 \
             -timeout 30s \
             "${manifest_args[@]}" \
@@ -128,6 +129,7 @@ jobs:
             ${{ runner.temp }}/crawl.stdout
             ${{ runner.temp }}/crawl.stderr
             ${{ runner.temp }}/manifest.json
+            ${{ runner.temp }}/crawl-diagnostics
 
       - name: Stop on crawl failure
         if: steps.crawl.outputs.exit_code != '0'
