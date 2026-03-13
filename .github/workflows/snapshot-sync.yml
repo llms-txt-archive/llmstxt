@@ -248,7 +248,7 @@ jobs:
           model: ${{ env.CODEX_MODEL }}
           effort: ${{ env.CODEX_EFFORT }}
           codex-args: >-
-            ["--skip-git-repo-check","--ephemeral"]
+            ["--ephemeral"]
 
       - name: Split Codex outputs
         if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
