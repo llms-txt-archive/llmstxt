@@ -24,15 +24,15 @@ Requirements:
 
 Output guidance:
 
-- `commit_title`: one concise conventional-commit-style title using the exact format `docs(snapshot): <what changed>`
+- `commit_title`: one concise conventional-commit-style title using the exact format `sync: <what changed>`
 - `commit_title` must be a complete finished phrase, not a fragment
 - `commit_title` must not end with `+`, `/`, `:`, `-`, `and`, `or`, `to`, `into`, `with`, `for`, `new`, `focused`, or `dedicated`
 - good `commit_title` examples:
-  - `docs(snapshot): split commands, env vars, and tools into dedicated refs`
-  - `docs(snapshot): move env var and tool tables into standalone refs`
+  - `sync: split commands, env vars, and tools into dedicated refs`
+  - `sync: move env var and tool tables into standalone refs`
 - bad `commit_title` examples:
-  - `docs(snapshot): split commands, env vars, and tools into new reference +`
-  - `docs(snapshot): split command, tool, and env var references into focused`
+  - `sync: split commands, env vars, and tools into new reference +`
+  - `sync: split command, tool, and env var references into focused`
 - `commit_body`: 2-4 short bullet-style lines joined into a single string with newlines
 - `release_title`: a short human-readable release heading
 - `release_notes_markdown`: markdown with these sections if relevant:

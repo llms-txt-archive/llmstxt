@@ -12,9 +12,9 @@
   "properties": {
     "commit_title": {
       "type": "string",
-      "minLength": 20,
+      "minLength": 12,
       "maxLength": 72,
-      "pattern": "^docs\\(snapshot\\)!?: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{10,68}[A-Za-z0-9`)]$"
+      "pattern": "^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,62}[A-Za-z0-9`)]$"
     },
     "commit_body": {
       "type": "string",

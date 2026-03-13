@@ -120,10 +120,10 @@ release_title = obj.get("release_title", "")
 notes = obj.get("release_notes_markdown", "")
 key_changes = obj.get("key_changes", [])
 
-if not re.match(r"^docs\(snapshot\)!?: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{10,68}[A-Za-z0-9`)]$", title):
+if not re.match(r"^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,62}[A-Za-z0-9`)]$", title):
     errors.append("commit_title does not match the required semantic-title format")
 
-suffix = title.removeprefix("docs(snapshot): ").strip().lower()
+suffix = title.removeprefix("sync: ").strip().lower()
 forbidden_suffixes = {
     "+", "/", ":", "-", "and", "or", "to", "into", "with", "for",
     "new", "focused", "dedicated",
