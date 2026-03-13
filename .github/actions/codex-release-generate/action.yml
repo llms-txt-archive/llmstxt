@@ -1,0 +1,123 @@
+name: "Codex Generate Release"
+description: "Run Codex to generate commit/release text from a docs snapshot diff, validate, and split outputs"
+author: "claudecodedocs"
+runs:
+  using: "composite"
+  steps:
+    - name: Run Codex
+      uses: openai/codex-action@v1
+      with:
+        openai-api-key: ${{ inputs.openai_api_key }}
+        prompt-file: ${{ inputs.prompt_file }}
+        output-file: ${{ inputs.output_file }}
+        output-schema-file: ${{ inputs.output_schema_file }}
+        working-directory: ${{ inputs.working_directory }}
+        sandbox: read-only
+        safety-strategy: drop-sudo
+        model: ${{ inputs.model }}
+        effort: ${{ inputs.effort }}
+        codex-args: >-
+          ["--ephemeral"]
+
+    - name: Validate structured output
+      shell: bash
+      env:
+        SUMMARY_JSON: ${{ inputs.output_file }}
+      run: |
+        set -euo pipefail
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "jq is required" >&2
+          exit 1
+        fi
+        title=$(jq -r '.commit_title // empty' "$SUMMARY_JSON")
+        release_title=$(jq -r '.release_title // empty' "$SUMMARY_JSON")
+        notes=$(jq -r '.release_notes_markdown // empty' "$SUMMARY_JSON")
+        key_count=$(jq '(.key_changes // []) | length' "$SUMMARY_JSON")
+
+        errors=()
+        if [[ -z "$title" || ! "$title" =~ ^sync:\  ]]; then
+          errors+=("commit_title must start with 'sync: '")
+        fi
+        # Reject dangling suffixes/placeholder fragments
+        last_word=${title##* }
+        case "${last_word,,}" in
+          +|/|:|-|and|or|to|into|with|for|new|focused|dedicated)
+            errors+=("commit_title ends with an invalid suffix: $last_word")
+            ;;
+        esac
+        if [[ "$release_title" =~ (in progress|analysis in progress|snapshot diff analysis) ]]; then
+          errors+=("release_title contains placeholder text")
+        fi
+        if [[ "$notes" =~ (in progress|analysis in progress|snapshot diff analysis) ]]; then
+          errors+=("release_notes_markdown contains placeholder text")
+        fi
+        # Require core sections
+        for sec in "## Summary" "## Added Docs" "## Updated Docs"; do
+          if ! grep -Fq "$sec" <<<"$notes"; then
+            errors+=("release_notes_markdown missing section: $sec")
+          fi
+        done
+        if (( key_count < 3 )); then
+          errors+=("key_changes must include at least 3 items")
+        fi
+
+        if (( ${#errors[@]} )); then
+          printf '%s\n' "${errors[@]}" >&2
+          exit 1
+        fi
+    - id: split
+      name: Split outputs
+      shell: bash
+      env:
+        SUMMARY_JSON: ${{ inputs.output_file }}
+      run: |
+        set -euo pipefail
+        outdir="${RUNNER_TEMP:-$PWD}"
+        jq -r '.commit_title' "$SUMMARY_JSON" > "$outdir/codex-commit-title.txt"
+        jq -r '.commit_body' "$SUMMARY_JSON" > "$outdir/codex-commit-body.txt"
+        jq -r '.release_title' "$SUMMARY_JSON" > "$outdir/codex-release-title.txt"
+        jq -r '.release_notes_markdown' "$SUMMARY_JSON" > "$outdir/codex-release-notes.md"
+        jq -r '.key_changes[]' "$SUMMARY_JSON" > "$outdir/codex-key-changes.txt"
+        {
+          echo "commit_title=$(cat "$outdir/codex-commit-title.txt")";
+          echo "commit_body=$(cat "$outdir/codex-commit-body.txt")";
+          echo "release_title=$(cat "$outdir/codex-release-title.txt")";
+          echo "release_notes_file=$outdir/codex-release-notes.md";
+        } >> "$GITHUB_OUTPUT"
+
+inputs:
+  openai_api_key:
+    description: "OpenAI API key"
+    required: true
+  prompt_file:
+    description: "Prompt file path"
+    required: true
+  output_schema_file:
+    description: "Output JSON schema file"
+    required: true
+  working_directory:
+    description: "Working directory for Codex"
+    required: true
+  output_file:
+    description: "Where to write the JSON output"
+    required: true
+  model:
+    description: "Model name"
+    required: true
+  effort:
+    description: "Reasoning effort"
+    required: true
+
+outputs:
+  commit_title:
+    description: "Commit title text"
+    value: ${{ steps.split.outputs.commit_title }}
+  commit_body:
+    description: "Commit body text"
+    value: ${{ steps.split.outputs.commit_body }}
+  release_title:
+    description: "Release title text"
+    value: ${{ steps.split.outputs.release_title }}
+  release_notes_file:
+    description: "Path to the release notes markdown file"
+    value: ${{ steps.split.outputs.release_notes_file }}
