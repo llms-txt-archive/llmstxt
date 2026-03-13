@@ -1,0 +1,165 @@
+name: Monitor Claude Code Docs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-claude-code-docs
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Fetch latest Claude Code docs
+        run: go run ./cmd/claudecodedocs
+
+      - name: Detect snapshot diff
+        id: detect
+        run: |
+          if [ -z "$(git status --porcelain -- snapshot)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No snapshot changes detected."
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          manifest_sha="$(sha256sum snapshot/manifest.json | awk '{print $1}')"
+          echo "manifest_sha=$manifest_sha" >> "$GITHUB_OUTPUT"
+
+          git add -N snapshot
+          git status --porcelain -- snapshot > snapshot-status.txt
+          git diff --stat -- snapshot > snapshot-diffstat.txt
+          git diff --unified=3 -- snapshot > snapshot.patch
+
+          changed_files="$(wc -l < snapshot-status.txt | tr -d ' ')"
+          echo "changed_files=$changed_files" >> "$GITHUB_OUTPUT"
+
+      - name: Upload diff artifacts
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-code-docs-diff-${{ steps.detect.outputs.manifest_sha }}
+          path: |
+            snapshot-status.txt
+            snapshot-diffstat.txt
+            snapshot.patch
+            snapshot/manifest.json
+
+      - name: Restore alert state
+        if: steps.detect.outputs.changed == 'true'
+        id: restore_alert
+        uses: actions/cache/restore@v4
+        with:
+          path: .alert-state
+          key: alert-state-${{ github.ref_name }}-${{ steps.detect.outputs.manifest_sha }}
+          restore-keys: |
+            alert-state-${{ github.ref_name }}-
+
+      - name: Decide whether to notify
+        if: steps.detect.outputs.changed == 'true'
+        id: notify_gate
+        run: |
+          previous_manifest_sha=""
+          if [ -f .alert-state/last-manifest-sha ]; then
+            previous_manifest_sha="$(cat .alert-state/last-manifest-sha)"
+          fi
+
+          if [ "$previous_manifest_sha" = "${{ steps.detect.outputs.manifest_sha }}" ]; then
+            echo "send=false" >> "$GITHUB_OUTPUT"
+            echo "This diff hash was already alerted."
+            exit 0
+          fi
+
+          echo "send=true" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Discord
+        if: steps.notify_gate.outputs.send == 'true'
+        id: notify
+        env:
+          CHANGED_FILES: ${{ steps.detect.outputs.changed_files }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          MANIFEST_SHA: ${{ steps.detect.outputs.manifest_sha }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL secret is not configured yet; skipping notification."
+            echo "sent=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python3 - <<'PY' > discord-payload.json
+import json
+import os
+from pathlib import Path
+
+status_lines = []
+for raw_line in Path("snapshot-status.txt").read_text().splitlines():
+    cleaned = raw_line[3:] if len(raw_line) > 3 else raw_line
+    status_lines.append(f"- {cleaned}")
+
+diffstat_lines = Path("snapshot-diffstat.txt").read_text().splitlines()
+
+status_block = "\n".join(status_lines[:12]) or "- no changed paths captured"
+diffstat_block = "\n".join(diffstat_lines[:12]) or "no diffstat captured"
+run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+
+content = (
+    "claude code docs diff detected\n"
+    f"repo: {os.environ['GITHUB_REPOSITORY']}\n"
+    f"branch: {os.environ['GITHUB_REF_NAME']}\n"
+    f"changed files: {os.environ['CHANGED_FILES']}\n"
+    f"manifest sha: {os.environ['MANIFEST_SHA'][:12]}\n"
+    f"run: {run_url}\n\n"
+    "changed paths:\n"
+    f"{status_block}\n\n"
+    "diffstat:\n"
+    f"{diffstat_block}"
+)
+
+print(json.dumps({"content": content[:1900]}))
+PY
+
+          curl -fsS \
+            -H "Content-Type: application/json" \
+            --data @discord-payload.json \
+            "$DISCORD_WEBHOOK_URL"
+
+          echo "sent=true" >> "$GITHUB_OUTPUT"
+
+      - name: Remember alerted diff
+        if: steps.notify.outputs.sent == 'true'
+        run: |
+          mkdir -p .alert-state
+          printf '%s' '${{ steps.detect.outputs.manifest_sha }}' > .alert-state/last-manifest-sha
+
+      - name: Save alert state
+        if: steps.notify.outputs.sent == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .alert-state
+          key: alert-state-${{ github.ref_name }}-${{ steps.detect.outputs.manifest_sha }}
