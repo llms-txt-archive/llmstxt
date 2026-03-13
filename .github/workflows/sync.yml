@@ -3,7 +3,7 @@ name: Monitor Claude Code Docs
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "42 * * * *"
 
 permissions:
   contents: read
