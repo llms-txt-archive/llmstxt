@@ -16,15 +16,15 @@ jobs:
   codex-dry-run:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
 
       - name: Validate Codex auth configuration
-        env:
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "Using OPENAI_API_KEY for Codex dry run."
@@ -60,9 +60,7 @@ jobs:
           find "$artifact_dir" -maxdepth 2 -type f | sort
 
       - name: Seed Codex home from ChatGPT auth
-        if: secrets.CODEX_AUTH_JSON != ''
-        env:
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        if: env.CODEX_AUTH_JSON != ''
         run: |
           mkdir -p "$RUNNER_TEMP/codex-home"
           printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json"

@@ -88,6 +88,7 @@ Snapshot repos should call `.github/workflows/snapshot-sync.yml` with:
 - `repo_title`
 - `schedule_label`
 - `tool_ref`
+- `tool_repo_token` when this tooling repo is private
 
 The reusable workflow:
 
@@ -99,6 +100,8 @@ The reusable workflow:
 6. syncs raw Markdown files into the snapshot repo root
 7. renders the generated `README.md`
 8. commits and creates a release only when raw tracked content actually changed
+
+If this tooling repo is private, the caller repo must provide a secret with read access to `f-pisani/claudecodedocs` and pass it to the reusable workflow as `tool_repo_token`.
 
 ## Notes
 

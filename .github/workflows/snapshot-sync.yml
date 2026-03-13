@@ -25,6 +25,9 @@ on:
         required: false
         type: number
         default: 5
+    secrets:
+      tool_repo_token:
+        required: false
 
 permissions:
   contents: write
@@ -52,6 +55,7 @@ jobs:
           ref: ${{ inputs.tool_ref }}
           path: .toolrepo
           fetch-depth: 1
+          token: ${{ secrets.tool_repo_token || github.token }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
