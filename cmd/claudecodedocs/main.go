@@ -259,9 +259,9 @@ func run(ctx context.Context, cfg config) error {
 
 	previousDocuments := previousDocumentsByURL(previousManifest)
 	sourcePath := sourcePathForLayout(cfg.layout)
-	sourceValidators := sourceValidators(previousManifest)
+	sourcePrevious := previousSourceEntry(previousManifest, sourcePath)
 
-	sourceResult, err := fetchDocument(ctx, client, policy, spoolDir, cfg.snapshotRoot, cfg.sourceURL, sourcePath, sourceValidators)
+	sourceResult, err := fetchDocument(ctx, client, policy, spoolDir, cfg.snapshotRoot, cfg.sourceURL, sourcePath, sourcePrevious)
 	if err != nil {
 		failures := []fetchFailure{buildFetchFailure(cfg.diagnosticsDir, cfg.sourceURL, sourcePath, err)}
 		writeDiagnosticManifest(cfg.manifestOut, buildDiagnosticManifest(cfg.sourceURL, sourcePath, nil, nil, nil, failures))
@@ -442,17 +442,6 @@ func loadManifest(manifestPath string) (*manifest, error) {
 	return &manifestData, nil
 }
 
-func sourceValidators(manifestData *manifest) fetchValidators {
-	if manifestData == nil {
-		return fetchValidators{}
-	}
-
-	return fetchValidators{
-		LastModifiedAt: manifestData.SourceLastModifiedAt,
-		ETag:           manifestData.SourceETag,
-	}
-}
-
 func previousDocumentsByURL(manifestData *manifest) map[string]manifestEntry {
 	if manifestData == nil {
 		return nil
@@ -464,6 +453,25 @@ func previousDocumentsByURL(manifestData *manifest) map[string]manifestEntry {
 	}
 
 	return documents
+}
+
+func previousSourceEntry(manifestData *manifest, fallbackPath string) manifestEntry {
+	if manifestData == nil {
+		return manifestEntry{Path: fallbackPath}
+	}
+
+	sourcePath := manifestData.SourcePath
+	if sourcePath == "" {
+		sourcePath = fallbackPath
+	}
+
+	return manifestEntry{
+		URL:            manifestData.SourceURL,
+		Path:           sourcePath,
+		SHA256:         manifestData.SourceSHA256,
+		LastModifiedAt: manifestData.SourceLastModifiedAt,
+		ETag:           manifestData.SourceETag,
+	}
 }
 
 func newURLPolicy(sourceURL string, allowedHostsCSV string) (*urlPolicy, error) {
@@ -715,10 +723,7 @@ func fetchDocuments(
 						continue
 					}
 
-					result, err := fetchDocument(ctx, client, policy, spoolDir, snapshotRoot, job.url, relativePath, fetchValidators{
-						LastModifiedAt: previous.LastModifiedAt,
-						ETag:           previous.ETag,
-					})
+					result, err := fetchDocument(ctx, client, policy, spoolDir, snapshotRoot, job.url, relativePath, previous)
 					if err != nil {
 						failure := buildFetchFailure(diagnosticsDir, job.url, relativePath, err)
 						preserved, preservedErr := preservePreviousDocument(snapshotRoot, job.url, relativePath, previous)
@@ -788,6 +793,9 @@ func preservePreviousDocument(snapshotRoot string, rawURL string, relativePath s
 	if err != nil {
 		return fetchResult{}, err
 	}
+	if err := validateCachedSummary(previousPath, sha256Value, bytesCount, previous); err != nil {
+		return fetchResult{}, err
+	}
 
 	return fetchResult{
 		URL:            rawURL,
@@ -808,7 +816,7 @@ func fetchDocument(
 	snapshotRoot string,
 	rawURL string,
 	relativePath string,
-	validators fetchValidators,
+	previous manifestEntry,
 ) (fetchResult, error) {
 	if err := policy.Validate(rawURL); err != nil {
 		return fetchResult{}, err
@@ -817,6 +825,10 @@ func fetchDocument(
 	requireMarkdown, err := isMarkdownURL(rawURL)
 	if err != nil {
 		return fetchResult{}, err
+	}
+	validators := fetchValidators{
+		LastModifiedAt: previous.LastModifiedAt,
+		ETag:           previous.ETag,
 	}
 
 	attempts := 1
@@ -831,7 +843,7 @@ func fetchDocument(
 		}
 
 		if response.NotModified {
-			cachedResult, cacheErr := loadCachedDocument(snapshotRoot, rawURL, relativePath, validators, response)
+			cachedResult, cacheErr := loadCachedDocument(snapshotRoot, rawURL, relativePath, previous, response)
 			if cacheErr == nil {
 				return cachedResult, nil
 			}
@@ -870,9 +882,12 @@ func fetchDocument(
 	return fetchResult{}, fmt.Errorf("failed to fetch %s", rawURL)
 }
 
-func loadCachedDocument(snapshotRoot string, rawURL string, relativePath string, validators fetchValidators, response httpFetchResponse) (fetchResult, error) {
+func loadCachedDocument(snapshotRoot string, rawURL string, relativePath string, previous manifestEntry, response httpFetchResponse) (fetchResult, error) {
 	localPath, sha256Value, bytesCount, err := summarizeExistingFile(snapshotRoot, filepath.ToSlash(relativePath))
 	if err != nil {
+		return fetchResult{}, err
+	}
+	if err := validateCachedSummary(filepath.ToSlash(relativePath), sha256Value, bytesCount, previous); err != nil {
 		return fetchResult{}, err
 	}
 
@@ -882,9 +897,19 @@ func loadCachedDocument(snapshotRoot string, rawURL string, relativePath string,
 		LocalPath:      localPath,
 		SHA256:         sha256Value,
 		Bytes:          bytesCount,
-		LastModifiedAt: coalesceValidator(response.LastModifiedAt, validators.LastModifiedAt),
-		ETag:           coalesceValidator(response.ETag, validators.ETag),
+		LastModifiedAt: coalesceValidator(response.LastModifiedAt, previous.LastModifiedAt),
+		ETag:           coalesceValidator(response.ETag, previous.ETag),
 	}, nil
+}
+
+func validateCachedSummary(relativePath string, sha256Value string, bytesCount int64, previous manifestEntry) error {
+	if previous.SHA256 != "" && previous.SHA256 != sha256Value {
+		return fmt.Errorf("cached file %s does not match previous manifest hash", relativePath)
+	}
+	if previous.Bytes > 0 && previous.Bytes != bytesCount {
+		return fmt.Errorf("cached file %s size does not match previous manifest", relativePath)
+	}
+	return nil
 }
 
 func fetchURL(ctx context.Context, client *http.Client, rawURL string, spoolDir string, validators fetchValidators) (response httpFetchResponse, err error) {

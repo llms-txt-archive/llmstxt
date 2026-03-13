@@ -451,7 +451,7 @@ func TestFetchDocumentStreamsToDiskAndComputesMetadata(t *testing.T) {
 		t.TempDir(),
 		"https://docs.example.com/docs/en/overview.md",
 		filepath.Join("docs", "en", "overview.md"),
-		fetchValidators{},
+		manifestEntry{},
 	)
 	if err != nil {
 		t.Fatalf("fetchDocument() error = %v", err)
@@ -497,7 +497,7 @@ func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
 		t.TempDir(),
 		"https://docs.example.com/docs/en/skills.md",
 		filepath.Join("docs", "en", "skills.md"),
-		fetchValidators{},
+		manifestEntry{},
 	)
 	if err != nil {
 		t.Fatalf("fetchDocument() error = %v", err)
@@ -545,7 +545,10 @@ func TestFetchDocumentUsesCachedFileOn304(t *testing.T) {
 		snapshotRoot,
 		"https://docs.example.com/docs/en/overview.md",
 		relativePath,
-		fetchValidators{
+		manifestEntry{
+			Path:           filepath.ToSlash(relativePath),
+			SHA256:         hashBytes([]byte(body)),
+			Bytes:          int64(len(body)),
 			LastModifiedAt: "2026-03-13T06:36:52Z",
 			ETag:           `"etag-1"`,
 		},
@@ -594,7 +597,8 @@ func TestFetchDocumentRefetchesOn304CacheMiss(t *testing.T) {
 		t.TempDir(),
 		"https://docs.example.com/docs/en/overview.md",
 		filepath.Join("docs", "en", "overview.md"),
-		fetchValidators{
+		manifestEntry{
+			Path:           "docs/en/overview.md",
 			LastModifiedAt: "2026-03-13T06:36:52Z",
 			ETag:           `"etag-1"`,
 		},
@@ -608,6 +612,69 @@ func TestFetchDocumentRefetchesOn304CacheMiss(t *testing.T) {
 	}
 	if got := readFile(t, result.LocalPath); got != "# Refetched markdown\n" {
 		t.Fatalf("fetchDocument() refetched body = %q", got)
+	}
+}
+
+func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	relativePath := filepath.Join("docs", "en", "overview.md")
+	fullPath := filepath.Join(snapshotRoot, relativePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(fullPath, []byte("# Drifted markdown\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	var requests atomic.Int32
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch requests.Add(1) {
+		case 1:
+			if got := req.Header.Get("If-None-Match"); got != `"etag-1"` {
+				t.Fatalf("If-None-Match = %q, want validator on first request", got)
+			}
+			return testResponse(http.StatusNotModified, map[string]string{
+				"ETag": `"etag-2"`,
+			}, ""), nil
+		default:
+			if got := req.Header.Get("If-None-Match"); got != "" {
+				t.Fatalf("If-None-Match on refetch = %q, want empty", got)
+			}
+			return testResponse(http.StatusOK, map[string]string{
+				"Content-Type": "text/markdown; charset=utf-8",
+				"ETag":         `"etag-3"`,
+			}, "# Refetched markdown\n"), nil
+		}
+	})
+
+	result, err := fetchDocument(
+		context.Background(),
+		client,
+		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+		t.TempDir(),
+		snapshotRoot,
+		"https://docs.example.com/docs/en/overview.md",
+		relativePath,
+		manifestEntry{
+			Path:           filepath.ToSlash(relativePath),
+			SHA256:         hashBytes([]byte("# Expected markdown\n")),
+			Bytes:          int64(len("# Expected markdown\n")),
+			LastModifiedAt: "2026-03-13T06:36:52Z",
+			ETag:           `"etag-1"`,
+		},
+	)
+	if err != nil {
+		t.Fatalf("fetchDocument() error = %v", err)
+	}
+
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2", got)
+	}
+	if got := readFile(t, result.LocalPath); got != "# Refetched markdown\n" {
+		t.Fatalf("fetchDocument() refetched body = %q", got)
+	}
+	if result.ETag != `"etag-3"` {
+		t.Fatalf("fetchDocument() etag = %q, want refetched validator", result.ETag)
 	}
 }
 
@@ -629,8 +696,8 @@ func TestPreservePreviousDocumentUsesExistingSnapshotCopy(t *testing.T) {
 		manifestEntry{
 			URL:            "https://example.com/docs/en/overview.md",
 			Path:           "docs/en/overview.md",
-			SHA256:         "stale",
-			Bytes:          10,
+			SHA256:         hashBytes(body),
+			Bytes:          int64(len(body)),
 			LastModifiedAt: "2026-03-13T12:00:00Z",
 			ETag:           "\"etag-1\"",
 		},
@@ -671,6 +738,35 @@ func TestPreservePreviousDocumentRequiresPreviousSnapshotEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no previous snapshot entry") {
 		t.Fatalf("preservePreviousDocument() error = %v, want missing previous snapshot entry", err)
+	}
+}
+
+func TestPreservePreviousDocumentRejectsHashMismatch(t *testing.T) {
+	tempDir := t.TempDir()
+	targetPath := filepath.Join(tempDir, "docs", "en", "overview.md")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("# Drifted markdown\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	_, err := preservePreviousDocument(
+		tempDir,
+		"https://example.com/docs/en/overview.md",
+		filepath.Join("docs", "en", "overview.md"),
+		manifestEntry{
+			URL:    "https://example.com/docs/en/overview.md",
+			Path:   "docs/en/overview.md",
+			SHA256: hashBytes([]byte("# Expected markdown\n")),
+			Bytes:  int64(len("# Expected markdown\n")),
+		},
+	)
+	if err == nil {
+		t.Fatal("preservePreviousDocument() error = nil, want hash mismatch")
+	}
+	if !strings.Contains(err.Error(), "does not match previous manifest hash") {
+		t.Fatalf("preservePreviousDocument() error = %v, want hash mismatch", err)
 	}
 }
 
