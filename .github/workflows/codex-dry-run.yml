@@ -44,9 +44,10 @@ jobs:
       - name: Download diff artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
         run: |
           mkdir -p "$RUNNER_TEMP/docs-diff-artifact"
-          gh run download "${{ inputs.run_id }}" --dir "$RUNNER_TEMP/docs-diff-artifact"
+          gh run download "$RUN_ID" --dir "$RUNNER_TEMP/docs-diff-artifact"
 
       - name: Resolve artifact directory
         id: artifact
@@ -68,26 +69,32 @@ jobs:
           printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json"
           chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
 
+      - name: Sanitize patch for LLM
+        env:
+          ARTIFACT_DIR: ${{ steps.artifact.outputs.artifact_dir }}
+        run: |
+          if [ -f "$ARTIFACT_DIR/snapshot.patch" ]; then
+            perl -0777 -pe 's/<!--.*?-->//gs' "$ARTIFACT_DIR/snapshot.patch" > "$ARTIFACT_DIR/snapshot-sanitized.patch" || true
+          fi
+
       - name: Run Codex dry run summary
-        id: run_codex
-        uses: openai/codex-action@v1
+        uses: ./.github/actions/codex-release-generate
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .github/codex/prompts/docs-diff-summary.md
-          output-file: codex-docs-summary.json
-          sandbox: read-only
-          safety-strategy: drop-sudo
-          codex-home: ${{ runner.temp }}/codex-home
-          codex-args: >-
-            ["--model","${{ env.CODEX_MODEL }}","-c","model_reasoning_effort=\"${{ env.CODEX_EFFORT }}\"","--skip-git-repo-check","--ephemeral","--cd","${{ steps.artifact.outputs.artifact_dir }}","--output-schema","${{ github.workspace }}/.github/codex/schemas/docs-diff-summary.schema.json"]
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          prompt_file: .github/codex/prompts/docs-diff-summary.md
+          output_schema_file: .github/codex/schemas/docs-diff-summary.schema.json
+          working_directory: ${{ steps.artifact.outputs.artifact_dir }}
+          output_file: ${{ runner.temp }}/codex-docs-summary.json
+          model: ${{ env.CODEX_MODEL }}
+          effort: ${{ env.CODEX_EFFORT }}
 
       - name: Split structured outputs
         run: |
-          jq -r '.commit_title' codex-docs-summary.json > codex-commit-title.txt
-          jq -r '.commit_body' codex-docs-summary.json > codex-commit-body.txt
-          jq -r '.release_title' codex-docs-summary.json > codex-release-title.txt
-          jq -r '.release_notes_markdown' codex-docs-summary.json > codex-release-notes.md
-          jq -r '.key_changes[]' codex-docs-summary.json > codex-key-changes.txt
+          cp "$RUNNER_TEMP/codex-docs-summary.json" ./
+          cp "$RUNNER_TEMP"/codex-commit-*.txt ./
+          cp "$RUNNER_TEMP/codex-release-title.txt" ./
+          cp "$RUNNER_TEMP/codex-release-notes.md" ./
+          cp "$RUNNER_TEMP/codex-key-changes.txt" ./
 
       - name: Publish workflow summary
         run: |
