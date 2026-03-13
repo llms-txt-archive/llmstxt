@@ -167,9 +167,6 @@ jobs:
             --exclude 'README.md' \
             "$RUNNER_TEMP/generated"/ ./
 
-      - name: Remove tool checkout from snapshot worktree
-        run: rm -rf .toolrepo
-
       - name: Detect raw content changes
         id: detect
         run: |
@@ -359,6 +356,10 @@ jobs:
             -document-count "$document_count" \
             -skipped-count "$skipped_count" \
             -releases-json "$RUNNER_TEMP/releases-with-current.json"
+
+      - name: Remove tool checkout from snapshot worktree
+        if: steps.detect.outputs.changed == 'true'
+        run: rm -rf .toolrepo
 
       - name: Configure git author
         if: steps.detect.outputs.changed == 'true'
