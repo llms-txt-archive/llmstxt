@@ -357,10 +357,6 @@ jobs:
             -skipped-count "$skipped_count" \
             -releases-json "$RUNNER_TEMP/releases-with-current.json"
 
-      - name: Remove tool checkout from snapshot worktree
-        if: steps.detect.outputs.changed == 'true'
-        run: rm -rf .toolrepo
-
       - name: Configure git author
         if: steps.detect.outputs.changed == 'true'
         run: |
@@ -372,7 +368,7 @@ jobs:
         env:
           COMMIT_MESSAGE_PATH: ${{ steps.release_meta.outputs.commit_message_path }}
         run: |
-          git add .
+          git add -A -- . ':(exclude).github' ':(exclude).toolrepo'
           git commit -F "$COMMIT_MESSAGE_PATH"
 
       - name: Push snapshot update
