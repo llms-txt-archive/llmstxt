@@ -348,3 +348,140 @@ func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
 		t.Fatalf("fetchDocument() attempts = %d, want 2", got)
 	}
 }
+
+func TestPreservePreviousDocumentUsesExistingSnapshotCopy(t *testing.T) {
+	tempDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() error = %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(oldWD)
+	}()
+
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("os.Chdir() error = %v", err)
+	}
+
+	body := []byte("# Cached markdown\n")
+	if err := os.MkdirAll(filepath.Join("docs", "en"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("docs", "en", "overview.md"), body, 0o644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	got, err := preservePreviousDocument(
+		"https://example.com/docs/en/overview.md",
+		"docs/en/overview.md",
+		manifestEntry{
+			URL:            "https://example.com/docs/en/overview.md",
+			Path:           "docs/en/overview.md",
+			SHA256:         "stale",
+			Bytes:          10,
+			LastModifiedAt: "2026-03-13T12:00:00Z",
+			ETag:           "\"etag-1\"",
+		},
+	)
+	if err != nil {
+		t.Fatalf("preservePreviousDocument() error = %v", err)
+	}
+
+	if got.RelativePath != "docs/en/overview.md" {
+		t.Fatalf("preservePreviousDocument() path = %q, want %q", got.RelativePath, "docs/en/overview.md")
+	}
+	if string(got.Body) != string(body) {
+		t.Fatalf("preservePreviousDocument() body = %q, want %q", string(got.Body), string(body))
+	}
+	if got.LastModifiedAt != "2026-03-13T12:00:00Z" {
+		t.Fatalf("preservePreviousDocument() last_modified_at = %q", got.LastModifiedAt)
+	}
+	if got.ETag != "\"etag-1\"" {
+		t.Fatalf("preservePreviousDocument() etag = %q", got.ETag)
+	}
+	if got.SHA256 != hashBytes(body) {
+		t.Fatalf("preservePreviousDocument() sha256 = %q, want %q", got.SHA256, hashBytes(body))
+	}
+	if got.Bytes != len(body) {
+		t.Fatalf("preservePreviousDocument() bytes = %d, want %d", got.Bytes, len(body))
+	}
+}
+
+func TestPreservePreviousDocumentRequiresPreviousSnapshotEntry(t *testing.T) {
+	_, err := preservePreviousDocument(
+		"https://example.com/docs/en/overview.md",
+		"docs/en/overview.md",
+		manifestEntry{},
+	)
+	if err == nil {
+		t.Fatal("preservePreviousDocument() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "no previous snapshot entry") {
+		t.Fatalf("preservePreviousDocument() error = %v, want missing previous snapshot entry", err)
+	}
+}
+
+func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() error = %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(oldWD)
+	}()
+
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("os.Chdir() error = %v", err)
+	}
+
+	cachedBody := []byte("# Previous snapshot\n")
+	if err := os.MkdirAll(filepath.Join("docs", "en"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("docs", "en", "skills.md"), cachedBody, 0o644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><body>not found</body></html>"))
+	}))
+	defer server.Close()
+
+	previous := map[string]manifestEntry{
+		server.URL + "/docs/en/skills.md": {
+			URL:            server.URL + "/docs/en/skills.md",
+			Path:           "docs/en/skills.md",
+			SHA256:         hashBytes(cachedBody),
+			Bytes:          len(cachedBody),
+			LastModifiedAt: "2026-03-13T12:00:00Z",
+			ETag:           "\"etag-1\"",
+		},
+	}
+
+	gotDocs, gotFailures := fetchDocuments(
+		http.DefaultClient,
+		layoutRoot,
+		filepath.Join(tempDir, "diagnostics"),
+		[]string{server.URL + "/docs/en/skills.md"},
+		1,
+		previous,
+	)
+
+	if len(gotDocs) != 1 {
+		t.Fatalf("fetchDocuments() docs len = %d, want 1", len(gotDocs))
+	}
+	if string(gotDocs[0].Body) != string(cachedBody) {
+		t.Fatalf("fetchDocuments() preserved body = %q, want %q", string(gotDocs[0].Body), string(cachedBody))
+	}
+	if len(gotFailures) != 1 {
+		t.Fatalf("fetchDocuments() failures len = %d, want 1", len(gotFailures))
+	}
+	if !gotFailures[0].PreservedExisting {
+		t.Fatalf("fetchDocuments() failure preserved_existing = false, want true")
+	}
+	if gotFailures[0].DiagnosticPath == "" {
+		t.Fatalf("fetchDocuments() diagnostic_path = %q, want non-empty path", gotFailures[0].DiagnosticPath)
+	}
+}

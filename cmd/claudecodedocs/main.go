@@ -57,9 +57,10 @@ type fetchResult struct {
 }
 
 type fetchFailure struct {
-	URL            string `json:"url"`
-	Error          string `json:"error"`
-	DiagnosticPath string `json:"diagnostic_path,omitempty"`
+	URL               string `json:"url"`
+	Error             string `json:"error"`
+	DiagnosticPath    string `json:"diagnostic_path,omitempty"`
+	PreservedExisting bool   `json:"preserved_existing,omitempty"`
 }
 
 type manifest struct {
@@ -198,19 +199,20 @@ func run(cfg config) error {
 		return err
 	}
 
-	if len(failures) > 0 {
-		return &partialSyncError{failures: failures}
-	}
-
 	if err := stageOutput(cfg.outputDir, sourceResult, documents); err != nil {
 		return err
 	}
 
+	if len(failures) > 0 {
+		fmt.Fprintf(os.Stderr, "%s\n", (&partialSyncError{failures: failures}).Error())
+	}
+
 	fmt.Printf(
-		"Fetched %d markdown documents into %s (%d skipped non-markdown URLs)\n",
+		"Fetched %d markdown documents into %s (%d skipped non-markdown URLs, %d fetch failures)\n",
 		len(documents),
 		cfg.outputDir,
 		len(skipped),
+		len(failures),
 	)
 	return nil
 }
@@ -387,6 +389,21 @@ func fetchDocuments(client *http.Client, layout string, diagnosticsDir string, d
 							failure.DiagnosticPath = diagnosticPath
 						}
 					}
+
+					preserved, preservedErr := preservePreviousDocument(job.url, relativePath, previous)
+					if preservedErr == nil {
+						failure.PreservedExisting = true
+						mu.Lock()
+						results[job.index] = preserved
+						succeeded[job.index] = true
+						failures = append(failures, failure)
+						mu.Unlock()
+						continue
+					}
+					if previous.Path != "" {
+						failure.Error = fmt.Sprintf("%s (failed to preserve previous copy: %v)", failure.Error, preservedErr)
+					}
+
 					mu.Lock()
 					failures = append(failures, failure)
 					mu.Unlock()
@@ -419,6 +436,27 @@ func fetchDocuments(client *http.Client, layout string, diagnosticsDir string, d
 	})
 
 	return finalResults, failures
+}
+
+func preservePreviousDocument(rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
+	if previous.Path == "" {
+		return fetchResult{}, errors.New("no previous snapshot entry")
+	}
+
+	cachedBody, err := readExistingFile(previous.Path)
+	if err != nil {
+		return fetchResult{}, err
+	}
+
+	return fetchResult{
+		URL:            rawURL,
+		RelativePath:   relativePath,
+		Body:           cachedBody,
+		SHA256:         hashBytes(cachedBody),
+		Bytes:          len(cachedBody),
+		LastModifiedAt: previous.LastModifiedAt,
+		ETag:           previous.ETag,
+	}, nil
 }
 
 func fetchDocument(client *http.Client, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {

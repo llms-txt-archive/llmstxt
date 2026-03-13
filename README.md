@@ -40,6 +40,7 @@ It also supports release-backed conditional fetch state:
 - only mirrors `.md` URLs from `llms.txt`
 - rejects `.md` URLs that actually return HTML instead of raw markdown
 - reports skipped non-Markdown URLs in the manifest asset
+- preserves the previous snapshot copy for URLs that remain in `llms.txt` but temporarily fail to download
 
 ## Local usage
 
@@ -116,7 +117,7 @@ If this tooling repo is private, the caller repo must provide a secret with read
 
 - `manifest.json` is a release asset, not a git-tracked file in snapshot repos.
 - Snapshot repos mirror only `.md` URLs listed in `llms.txt`.
-- If any fetch fails, the workflow uploads diagnostics but does not publish a commit or release.
+- Fatal crawl errors still stop the workflow, but document-level fetch failures only upload diagnostics and keep the previous snapshot copy when available.
 - Removed Markdown URLs are deleted from the tracked tree on successful syncs.
 
 ## Codex defaults
