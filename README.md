@@ -38,6 +38,7 @@ It also supports release-backed conditional fetch state:
 - writes a fresh release asset with `-manifest-out`
 - sends both `If-None-Match` and `If-Modified-Since` when prior validators are available
 - only mirrors `.md` URLs from `llms.txt`
+- rejects `.md` URLs that actually return HTML instead of raw markdown
 - reports skipped non-Markdown URLs in the manifest asset
 
 ## Local usage

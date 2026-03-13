@@ -396,7 +396,7 @@ func fetchDocuments(client *http.Client, layout string, docURLs []string, concur
 }
 
 func fetchDocument(client *http.Client, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
-	body, lastModifiedAt, etag, notModified, err := fetchURL(client, rawURL, previous.LastModifiedAt, previous.ETag)
+	body, contentType, lastModifiedAt, etag, notModified, err := fetchURL(client, rawURL, previous.LastModifiedAt, previous.ETag)
 	if err != nil {
 		return fetchResult{}, err
 	}
@@ -404,6 +404,16 @@ func fetchDocument(client *http.Client, rawURL string, relativePath string, prev
 	if notModified {
 		body, err = readExistingFile(relativePath)
 		if err != nil {
+			return fetchResult{}, err
+		}
+	}
+
+	requireMarkdown, err := isMarkdownURL(rawURL)
+	if err != nil {
+		return fetchResult{}, err
+	}
+	if requireMarkdown {
+		if err := ensureMarkdownResponse(rawURL, contentType, body); err != nil {
 			return fetchResult{}, err
 		}
 	}
@@ -419,10 +429,10 @@ func fetchDocument(client *http.Client, rawURL string, relativePath string, prev
 	}, nil
 }
 
-func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string, previousETag string) ([]byte, string, string, bool, error) {
+func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string, previousETag string) ([]byte, string, string, string, bool, error) {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, "", "", false, err
+		return nil, "", "", "", false, err
 	}
 
 	req.Header.Set("User-Agent", buildUserAgent())
@@ -436,12 +446,13 @@ func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", "", false, err
+		return nil, "", "", "", false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
 		return nil,
+			"",
 			coalesceValidator(normalizeLastModified(resp.Header.Get("Last-Modified")), previousLastModifiedAt),
 			coalesceValidator(normalizeETag(resp.Header.Get("ETag")), previousETag),
 			true,
@@ -449,19 +460,49 @@ func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string,
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", "", false, fmt.Errorf("unexpected HTTP %s", resp.Status)
+		return nil, "", "", "", false, fmt.Errorf("unexpected HTTP %s", resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, "", "", false, err
+		return nil, "", "", "", false, err
 	}
 
 	return body,
+		strings.TrimSpace(resp.Header.Get("Content-Type")),
 		normalizeLastModified(resp.Header.Get("Last-Modified")),
 		normalizeETag(resp.Header.Get("ETag")),
 		false,
 		nil
+}
+
+func ensureMarkdownResponse(rawURL string, contentType string, body []byte) error {
+	if looksLikeHTMLDocument(body) {
+		return fmt.Errorf("expected markdown response but received HTML document")
+	}
+
+	if contentType == "" {
+		return nil
+	}
+
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+		return fmt.Errorf("expected markdown response but received %s", mediaType)
+	}
+
+	return nil
+}
+
+func looksLikeHTMLDocument(body []byte) bool {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "<!doctype html") ||
+		strings.HasPrefix(lower, "<html") ||
+		(strings.Contains(lower, "<head") && strings.Contains(lower, "</html>"))
 }
 
 func buildUserAgent() string {

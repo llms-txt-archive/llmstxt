@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -219,5 +220,30 @@ func TestNormalizeETag(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("normalizeETag() = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureMarkdownResponseRejectsHTML(t *testing.T) {
+	err := ensureMarkdownResponse(
+		"https://platform.claude.com/docs/en/get-started.md",
+		"text/html; charset=utf-8",
+		[]byte("<!DOCTYPE html><html><head><title>Not Found</title></head><body></body></html>"),
+	)
+	if err == nil {
+		t.Fatal("ensureMarkdownResponse() error = nil, want rejection")
+	}
+	if !strings.Contains(err.Error(), "expected markdown response") {
+		t.Fatalf("ensureMarkdownResponse() error = %q, want markdown rejection", err)
+	}
+}
+
+func TestEnsureMarkdownResponseAcceptsMarkdown(t *testing.T) {
+	err := ensureMarkdownResponse(
+		"https://code.claude.com/docs/en/overview.md",
+		"text/markdown; charset=utf-8",
+		[]byte("# Overview\n\nReal markdown content.\n"),
+	)
+	if err != nil {
+		t.Fatalf("ensureMarkdownResponse() error = %v", err)
 	}
 }
