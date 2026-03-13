@@ -28,10 +28,10 @@ func TestRunRendersTemplateWithReleaseHistory(t *testing.T) {
   }
 ]`
 
-	if err := os.WriteFile(templatePath, []byte(templateBody), 0o644); err != nil {
+	if err := os.WriteFile(templatePath, []byte(templateBody), 0o600); err != nil {
 		t.Fatalf("WriteFile(template) error = %v", err)
 	}
-	if err := os.WriteFile(releasesPath, []byte(releasesBody), 0o644); err != nil {
+	if err := os.WriteFile(releasesPath, []byte(releasesBody), 0o600); err != nil {
 		t.Fatalf("WriteFile(releases) error = %v", err)
 	}
 
@@ -52,6 +52,7 @@ func TestRunRendersTemplateWithReleaseHistory(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 
+	// #nosec G304 -- outputPath is a temp file created by the test.
 	rendered, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatalf("ReadFile(output) error = %v", err)

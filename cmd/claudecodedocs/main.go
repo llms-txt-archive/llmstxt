@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,9 +10,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -19,6 +24,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -30,10 +37,24 @@ const (
 	layoutRoot            = "root"
 	layoutNested          = "nested"
 	nonMarkdownReason     = "non_markdown"
+	htmlSniffBytes        = 4096
+	progressLogEvery      = 25
 )
 
 var markdownLinkPattern = regexp.MustCompile(`\((https?://[^)\s]+)\)`)
 var plainURLLinePattern = regexp.MustCompile(`^(?:[-*+]\s+|\d+\.\s+)?(https?://\S+)$`)
+var blockedIPPfx = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+var retrySleepWithJitter = sleepWithJitter
 
 type config struct {
 	sourceURL            string
@@ -42,6 +63,8 @@ type config struct {
 	previousManifestPath string
 	manifestOut          string
 	diagnosticsDir       string
+	allowedHostsCSV      string
+	snapshotRoot         string
 	timeout              time.Duration
 	concurrency          int
 }
@@ -49,9 +72,9 @@ type config struct {
 type fetchResult struct {
 	URL            string
 	RelativePath   string
-	Body           []byte
+	LocalPath      string
 	SHA256         string
-	Bytes          int
+	Bytes          int64
 	LastModifiedAt string
 	ETag           string
 }
@@ -66,12 +89,12 @@ type fetchFailure struct {
 type manifest struct {
 	SourceURL            string          `json:"source_url"`
 	SourcePath           string          `json:"source_path"`
-	SourceSHA256         string          `json:"source_sha256"`
+	SourceSHA256         string          `json:"source_sha256,omitempty"`
 	SourceLastModifiedAt string          `json:"source_last_modified_at,omitempty"`
 	SourceETag           string          `json:"source_etag,omitempty"`
 	DocumentCount        int             `json:"document_count"`
 	SkippedCount         int             `json:"skipped_count,omitempty"`
-	Documents            []manifestEntry `json:"documents"`
+	Documents            []manifestEntry `json:"documents,omitempty"`
 	Skipped              []skippedEntry  `json:"skipped,omitempty"`
 	Failures             []fetchFailure  `json:"failures,omitempty"`
 }
@@ -80,7 +103,7 @@ type manifestEntry struct {
 	URL            string `json:"url"`
 	Path           string `json:"path"`
 	SHA256         string `json:"sha256"`
-	Bytes          int    `json:"bytes"`
+	Bytes          int64  `json:"bytes"`
 	LastModifiedAt string `json:"last_modified_at,omitempty"`
 	ETag           string `json:"etag,omitempty"`
 }
@@ -99,7 +122,35 @@ type unexpectedContentError struct {
 	status      string
 	contentType string
 	headers     map[string][]string
-	body        []byte
+	sniff       []byte
+	bodyPath    string
+}
+
+type fetchValidators struct {
+	LastModifiedAt string
+	ETag           string
+}
+
+type httpFetchResponse struct {
+	Status         string
+	ContentType    string
+	Headers        map[string][]string
+	LastModifiedAt string
+	ETag           string
+	NotModified    bool
+	BodyPath       string
+	Sniff          []byte
+	SHA256         string
+	Bytes          int64
+}
+
+type urlPolicy struct {
+	allowedHosts map[string]struct{}
+}
+
+type prefixCaptureWriter struct {
+	limit int
+	buf   []byte
 }
 
 func (e *partialSyncError) Error() string {
@@ -120,11 +171,24 @@ func (e *unexpectedContentError) Error() string {
 	return e.message
 }
 
+func (w *prefixCaptureWriter) Write(p []byte) (int, error) {
+	if remaining := w.limit - len(w.buf); remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		w.buf = append(w.buf, p[:remaining]...)
+	}
+	return len(p), nil
+}
+
 func main() {
 	log.SetFlags(0)
 
 	cfg := parseFlags()
-	if err := run(cfg); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, cfg); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -138,6 +202,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.previousManifestPath, "previous-manifest", "", "path to a previously released manifest.json")
 	flag.StringVar(&cfg.manifestOut, "manifest-out", "", "path where the fresh manifest.json is written")
 	flag.StringVar(&cfg.diagnosticsDir, "diagnostics-dir", "", "directory where fetch diagnostics are written on failure")
+	flag.StringVar(&cfg.allowedHostsCSV, "allowed-hosts", "", "comma-separated additional hosts allowed for document fetches")
 	flag.DurationVar(&cfg.timeout, "timeout", defaultTimeout, "HTTP timeout per request")
 	flag.IntVar(&cfg.concurrency, "concurrency", defaultWorkers, "maximum number of concurrent fetches")
 	flag.Parse()
@@ -158,11 +223,34 @@ func parseFlags() config {
 		log.Fatalf("invalid -layout %q (expected %q or %q)", cfg.layout, layoutRoot, layoutNested)
 	}
 
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("resolve current working directory: %v", err)
+	}
+	cfg.snapshotRoot = wd
+
 	return cfg
 }
 
-func run(cfg config) error {
-	client := &http.Client{Timeout: cfg.timeout}
+func run(ctx context.Context, cfg config) error {
+	policy, err := newURLPolicy(cfg.sourceURL, cfg.allowedHostsCSV)
+	if err != nil {
+		return err
+	}
+
+	if err := policy.Validate(cfg.sourceURL); err != nil {
+		return fmt.Errorf("validate source URL: %w", err)
+	}
+
+	client := newHTTPClient(cfg.timeout, policy)
+
+	spoolDir, err := os.MkdirTemp("", ".claudecodedocs-fetch-*")
+	if err != nil {
+		return fmt.Errorf("create fetch spool directory: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(spoolDir)
+	}()
 
 	previousManifest, err := loadManifest(cfg.previousManifestPath)
 	if err != nil {
@@ -170,36 +258,66 @@ func run(cfg config) error {
 	}
 
 	previousDocuments := previousDocumentsByURL(previousManifest)
-
 	sourcePath := sourcePathForLayout(cfg.layout)
-	sourceResult, err := fetchDocument(
-		client,
-		cfg.sourceURL,
-		sourcePath,
-		sourceValidators(previousManifest),
-	)
+	sourceValidators := sourceValidators(previousManifest)
+
+	sourceResult, err := fetchDocument(ctx, client, policy, spoolDir, cfg.snapshotRoot, cfg.sourceURL, sourcePath, sourceValidators)
 	if err != nil {
+		failures := []fetchFailure{buildFetchFailure(cfg.diagnosticsDir, cfg.sourceURL, sourcePath, err)}
+		writeDiagnosticManifest(cfg.manifestOut, buildDiagnosticManifest(cfg.sourceURL, sourcePath, nil, nil, nil, failures))
 		return fmt.Errorf("fetch %s: %w", cfg.sourceURL, err)
 	}
 
-	links, err := extractLinks(sourceResult.Body)
+	sourceBody, err := os.ReadFile(sourceResult.LocalPath)
 	if err != nil {
+		failures := []fetchFailure{{URL: cfg.sourceURL, Error: fmt.Sprintf("read fetched llms.txt: %v", err)}}
+		writeDiagnosticManifest(cfg.manifestOut, buildDiagnosticManifest(cfg.sourceURL, sourcePath, &sourceResult, nil, nil, failures))
+		return fmt.Errorf("read fetched llms.txt: %w", err)
+	}
+
+	links, err := extractLinks(sourceBody)
+	if err != nil {
+		failures := []fetchFailure{{URL: cfg.sourceURL, Error: err.Error()}}
+		writeDiagnosticManifest(cfg.manifestOut, buildDiagnosticManifest(cfg.sourceURL, sourcePath, &sourceResult, nil, nil, failures))
 		return err
 	}
 
 	docURLs, skipped, err := partitionDocumentURLs(links)
 	if err != nil {
+		failures := []fetchFailure{{URL: cfg.sourceURL, Error: err.Error()}}
+		writeDiagnosticManifest(cfg.manifestOut, buildDiagnosticManifest(cfg.sourceURL, sourcePath, &sourceResult, nil, skipped, failures))
 		return err
 	}
 
-	documents, failures := fetchDocuments(client, cfg.layout, cfg.diagnosticsDir, docURLs, cfg.concurrency, previousDocuments)
+	documents, failures := fetchDocuments(
+		ctx,
+		client,
+		policy,
+		cfg.layout,
+		cfg.diagnosticsDir,
+		spoolDir,
+		cfg.snapshotRoot,
+		docURLs,
+		cfg.concurrency,
+		previousDocuments,
+	)
+	if err := ctx.Err(); err != nil {
+		writeDiagnosticManifest(cfg.manifestOut, buildDiagnosticManifest(cfg.sourceURL, sourcePath, &sourceResult, documents, skipped, failures))
+		return err
+	}
 
 	manifestData := buildManifest(sourceResult, documents, skipped, failures)
-	if err := writeManifest(cfg.manifestOut, manifestData); err != nil {
+	if err := stageOutput(cfg.outputDir, sourceResult, documents); err != nil {
+		failureWithStage := append([]fetchFailure(nil), failures...)
+		failureWithStage = append(failureWithStage, fetchFailure{
+			URL:   cfg.sourceURL,
+			Error: fmt.Sprintf("stage output: %v", err),
+		})
+		writeDiagnosticManifest(cfg.manifestOut, buildDiagnosticManifest(cfg.sourceURL, sourcePath, &sourceResult, documents, skipped, failureWithStage))
 		return err
 	}
 
-	if err := stageOutput(cfg.outputDir, sourceResult, documents); err != nil {
+	if err := writeManifest(cfg.manifestOut, manifestData); err != nil {
 		return err
 	}
 
@@ -307,6 +425,7 @@ func loadManifest(manifestPath string) (*manifest, error) {
 		return nil, nil
 	}
 
+	// #nosec G304 -- manifestPath is a local CLI input to a release asset on disk.
 	body, err := os.ReadFile(manifestPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -323,12 +442,12 @@ func loadManifest(manifestPath string) (*manifest, error) {
 	return &manifestData, nil
 }
 
-func sourceValidators(manifestData *manifest) manifestEntry {
+func sourceValidators(manifestData *manifest) fetchValidators {
 	if manifestData == nil {
-		return manifestEntry{}
+		return fetchValidators{}
 	}
 
-	return manifestEntry{
+	return fetchValidators{
 		LastModifiedAt: manifestData.SourceLastModifiedAt,
 		ETag:           manifestData.SourceETag,
 	}
@@ -347,7 +466,183 @@ func previousDocumentsByURL(manifestData *manifest) map[string]manifestEntry {
 	return documents
 }
 
-func fetchDocuments(client *http.Client, layout string, diagnosticsDir string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
+func newURLPolicy(sourceURL string, allowedHostsCSV string) (*urlPolicy, error) {
+	parsedSource, err := url.Parse(sourceURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse source URL: %w", err)
+	}
+
+	sourceHost, err := normalizeHost(parsedSource.Hostname())
+	if err != nil {
+		return nil, fmt.Errorf("source host: %w", err)
+	}
+
+	allowedHosts := map[string]struct{}{sourceHost: {}}
+	for _, field := range strings.Split(allowedHostsCSV, ",") {
+		if strings.TrimSpace(field) == "" {
+			continue
+		}
+		host, err := normalizeHost(field)
+		if err != nil {
+			return nil, fmt.Errorf("allowed host %q: %w", field, err)
+		}
+		allowedHosts[host] = struct{}{}
+	}
+
+	return &urlPolicy{allowedHosts: allowedHosts}, nil
+}
+
+func normalizeHost(host string) (string, error) {
+	host = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(host, ".")))
+	if host == "" {
+		return "", errors.New("missing host")
+	}
+	if strings.Contains(host, "://") {
+		return "", errors.New("expected hostname, not URL")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return "", errors.New("IP literal hosts are not allowed")
+	}
+	if strings.Contains(host, "/") {
+		return "", errors.New("invalid host")
+	}
+	return host, nil
+}
+
+func (p *urlPolicy) Validate(rawURL string) error {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse URL: %w", err)
+	}
+	return p.ValidateURL(parsedURL)
+}
+
+func (p *urlPolicy) ValidateURL(parsedURL *url.URL) error {
+	if parsedURL == nil {
+		return errors.New("missing URL")
+	}
+	if !strings.EqualFold(parsedURL.Scheme, "https") {
+		return fmt.Errorf("scheme %q is not allowed", parsedURL.Scheme)
+	}
+
+	host, err := normalizeHost(parsedURL.Hostname())
+	if err != nil {
+		return err
+	}
+
+	if _, ok := p.allowedHosts[host]; !ok {
+		return fmt.Errorf("host %q is not allowed", host)
+	}
+	return nil
+}
+
+func (p *urlPolicy) ValidateResolvedHost(ctx context.Context, host string) ([]string, error) {
+	normalizedHost, err := normalizeHost(host)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := p.allowedHosts[normalizedHost]; !ok {
+		return nil, fmt.Errorf("host %q is not allowed", normalizedHost)
+	}
+
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, normalizedHost)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", normalizedHost, err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolve %s: no addresses returned", normalizedHost)
+	}
+
+	dialAddrs := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if err := validateResolvedIP(addr.IP); err != nil {
+			return nil, fmt.Errorf("resolve %s: %w", normalizedHost, err)
+		}
+		dialAddrs = append(dialAddrs, addr.IP.String())
+	}
+
+	return dialAddrs, nil
+}
+
+func validateResolvedIP(ip net.IP) error {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return errors.New("invalid resolved IP")
+	}
+	addr = addr.Unmap()
+
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return fmt.Errorf("resolved to blocked IP %s", addr)
+	}
+	for _, prefix := range blockedIPPfx {
+		if prefix.Contains(addr) {
+			return fmt.Errorf("resolved to blocked IP %s", addr)
+		}
+	}
+	return nil
+}
+
+func newHTTPClient(timeout time.Duration, policy *urlPolicy) *http.Client {
+	baseTransport, _ := http.DefaultTransport.(*http.Transport)
+	transport := baseTransport.Clone()
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+
+	transport.DialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+
+		if ip := net.ParseIP(host); ip != nil {
+			if err := validateResolvedIP(ip); err != nil {
+				return nil, err
+			}
+			return dialer.DialContext(ctx, network, address)
+		}
+
+		dialAddrs, err := policy.ValidateResolvedHost(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+
+		var lastErr error
+		for _, dialAddr := range dialAddrs {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(dialAddr, port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no dialable addresses for %s", host)
+		}
+		return nil, lastErr
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return policy.ValidateURL(req.URL)
+		},
+	}
+}
+
+func fetchDocuments(
+	ctx context.Context,
+	client *http.Client,
+	policy *urlPolicy,
+	layout string,
+	diagnosticsDir string,
+	spoolDir string,
+	snapshotRoot string,
+	docURLs []string,
+	concurrency int,
+	previousDocuments map[string]manifestEntry,
+) ([]fetchResult, []fetchFailure) {
 	type job struct {
 		index int
 		url   string
@@ -358,68 +653,109 @@ func fetchDocuments(client *http.Client, layout string, diagnosticsDir string, d
 	failures := make([]fetchFailure, 0)
 
 	var (
-		mu sync.Mutex
-		wg sync.WaitGroup
+		mu        sync.Mutex
+		wg        sync.WaitGroup
+		completed atomic.Int64
 	)
+
+	recordCompletion := func() {
+		done := completed.Add(1)
+		if done%progressLogEvery == 0 || done == int64(len(docURLs)) {
+			log.Printf("Fetched %d/%d markdown documents", done, len(docURLs))
+		}
+	}
+
+	recordFailure := func(jobURL string, failure fetchFailure) {
+		log.Printf("Fetch failure for %s: %s", jobURL, failure.Error)
+		mu.Lock()
+		failures = append(failures, failure)
+		mu.Unlock()
+		recordCompletion()
+	}
 
 	jobs := make(chan job)
 	for worker := 0; worker < concurrency; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for job := range jobs {
-				relativePath, err := relativePathForURL(job.url, layout)
-				if err != nil {
-					mu.Lock()
-					failures = append(failures, fetchFailure{URL: job.url, Error: fmt.Sprintf("map URL: %v", err)})
-					mu.Unlock()
-					continue
-				}
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case job, ok := <-jobs:
+					if !ok {
+						return
+					}
 
-				previous := previousDocuments[job.url]
-				result, err := fetchDocument(client, job.url, relativePath, previous)
-				if err != nil {
-					failure := fetchFailure{URL: job.url, Error: err.Error()}
-					var unexpected *unexpectedContentError
-					if errors.As(err, &unexpected) {
-						diagnosticPath, diagnosticErr := writeUnexpectedContentDiagnostic(diagnosticsDir, job.url, relativePath, unexpected)
-						if diagnosticErr != nil {
-							failure.Error = fmt.Sprintf("%s (failed to write diagnostic: %v)", failure.Error, diagnosticErr)
-						} else {
-							failure.DiagnosticPath = diagnosticPath
+					previous := previousDocuments[job.url]
+					relativePath := filepath.FromSlash(previous.Path)
+					if relativePath == "" {
+						var err error
+						relativePath, err = relativePathForURL(job.url, layout)
+						if err != nil {
+							recordFailure(job.url, fetchFailure{URL: job.url, Error: fmt.Sprintf("map URL: %v", err)})
+							continue
 						}
 					}
 
-					preserved, preservedErr := preservePreviousDocument(job.url, relativePath, previous)
-					if preservedErr == nil {
-						failure.PreservedExisting = true
-						mu.Lock()
-						results[job.index] = preserved
-						succeeded[job.index] = true
-						failures = append(failures, failure)
-						mu.Unlock()
+					if err := policy.Validate(job.url); err != nil {
+						failure := fetchFailure{URL: job.url, Error: err.Error()}
+						preserved, preservedErr := preservePreviousDocument(snapshotRoot, job.url, relativePath, previous)
+						if preservedErr == nil {
+							failure.PreservedExisting = true
+							mu.Lock()
+							results[job.index] = preserved
+							succeeded[job.index] = true
+							failures = append(failures, failure)
+							mu.Unlock()
+							recordCompletion()
+							continue
+						}
+						recordFailure(job.url, failure)
 						continue
 					}
-					if previous.Path != "" {
-						failure.Error = fmt.Sprintf("%s (failed to preserve previous copy: %v)", failure.Error, preservedErr)
+
+					result, err := fetchDocument(ctx, client, policy, spoolDir, snapshotRoot, job.url, relativePath, fetchValidators{
+						LastModifiedAt: previous.LastModifiedAt,
+						ETag:           previous.ETag,
+					})
+					if err != nil {
+						failure := buildFetchFailure(diagnosticsDir, job.url, relativePath, err)
+						preserved, preservedErr := preservePreviousDocument(snapshotRoot, job.url, relativePath, previous)
+						if preservedErr == nil {
+							failure.PreservedExisting = true
+							mu.Lock()
+							results[job.index] = preserved
+							succeeded[job.index] = true
+							failures = append(failures, failure)
+							mu.Unlock()
+							recordCompletion()
+							continue
+						}
+						if previous.Path != "" {
+							failure.Error = fmt.Sprintf("%s (failed to preserve previous copy: %v)", failure.Error, preservedErr)
+						}
+						recordFailure(job.url, failure)
+						continue
 					}
 
 					mu.Lock()
-					failures = append(failures, failure)
+					results[job.index] = result
+					succeeded[job.index] = true
 					mu.Unlock()
-					continue
+					recordCompletion()
 				}
-
-				mu.Lock()
-				results[job.index] = result
-				succeeded[job.index] = true
-				mu.Unlock()
 			}
 		}()
 	}
 
+enqueueLoop:
 	for index, docURL := range docURLs {
-		jobs <- job{index: index, url: docURL}
+		select {
+		case <-ctx.Done():
+			break enqueueLoop
+		case jobs <- job{index: index, url: docURL}:
+		}
 	}
 	close(jobs)
 	wg.Wait()
@@ -438,12 +774,17 @@ func fetchDocuments(client *http.Client, layout string, diagnosticsDir string, d
 	return finalResults, failures
 }
 
-func preservePreviousDocument(rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
+func preservePreviousDocument(snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
 	if previous.Path == "" {
 		return fetchResult{}, errors.New("no previous snapshot entry")
 	}
 
-	cachedBody, err := readExistingFile(previous.Path)
+	previousPath := previous.Path
+	if previousPath == "" {
+		previousPath = filepath.ToSlash(relativePath)
+	}
+
+	localPath, sha256Value, bytesCount, err := summarizeExistingFile(snapshotRoot, previousPath)
 	if err != nil {
 		return fetchResult{}, err
 	}
@@ -451,15 +792,28 @@ func preservePreviousDocument(rawURL string, relativePath string, previous manif
 	return fetchResult{
 		URL:            rawURL,
 		RelativePath:   relativePath,
-		Body:           cachedBody,
-		SHA256:         hashBytes(cachedBody),
-		Bytes:          len(cachedBody),
+		LocalPath:      localPath,
+		SHA256:         sha256Value,
+		Bytes:          bytesCount,
 		LastModifiedAt: previous.LastModifiedAt,
 		ETag:           previous.ETag,
 	}, nil
 }
 
-func fetchDocument(client *http.Client, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
+func fetchDocument(
+	ctx context.Context,
+	client *http.Client,
+	policy *urlPolicy,
+	spoolDir string,
+	snapshotRoot string,
+	rawURL string,
+	relativePath string,
+	validators fetchValidators,
+) (fetchResult, error) {
+	if err := policy.Validate(rawURL); err != nil {
+		return fetchResult{}, err
+	}
+
 	requireMarkdown, err := isMarkdownURL(rawURL)
 	if err != nil {
 		return fetchResult{}, err
@@ -471,23 +825,31 @@ func fetchDocument(client *http.Client, rawURL string, relativePath string, prev
 	}
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		body, status, contentType, headers, lastModifiedAt, etag, notModified, err := fetchURL(client, rawURL, previous.LastModifiedAt, previous.ETag)
+		response, err := fetchURL(ctx, client, rawURL, spoolDir, validators)
 		if err != nil {
 			return fetchResult{}, err
 		}
 
-		if notModified {
-			body, err = readExistingFile(relativePath)
+		if response.NotModified {
+			cachedResult, cacheErr := loadCachedDocument(snapshotRoot, rawURL, relativePath, validators, response)
+			if cacheErr == nil {
+				return cachedResult, nil
+			}
+
+			response, err = fetchURL(ctx, client, rawURL, spoolDir, fetchValidators{})
 			if err != nil {
-				return fetchResult{}, err
+				return fetchResult{}, fmt.Errorf("%v (after cache-miss refetch failed: %w)", cacheErr, err)
 			}
 		}
 
 		if requireMarkdown {
-			if err := ensureMarkdownResponse(status, contentType, headers, body); err != nil {
+			if err := ensureMarkdownResponse(response.Status, response.ContentType, response.Headers, response.Sniff, response.BodyPath); err != nil {
 				var unexpected *unexpectedContentError
-				if errors.As(err, &unexpected) && !notModified && attempt+1 < attempts {
-					time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+				if errors.As(err, &unexpected) && attempt+1 < attempts {
+					cleanupSpoolFile(response.BodyPath)
+					if sleepErr := retrySleepWithJitter(ctx, attempt); sleepErr != nil {
+						return fetchResult{}, sleepErr
+					}
 					continue
 				}
 				return fetchResult{}, err
@@ -497,83 +859,109 @@ func fetchDocument(client *http.Client, rawURL string, relativePath string, prev
 		return fetchResult{
 			URL:            rawURL,
 			RelativePath:   relativePath,
-			Body:           body,
-			SHA256:         hashBytes(body),
-			Bytes:          len(body),
-			LastModifiedAt: lastModifiedAt,
-			ETag:           etag,
+			LocalPath:      response.BodyPath,
+			SHA256:         response.SHA256,
+			Bytes:          response.Bytes,
+			LastModifiedAt: response.LastModifiedAt,
+			ETag:           response.ETag,
 		}, nil
 	}
 
 	return fetchResult{}, fmt.Errorf("failed to fetch %s", rawURL)
 }
 
-func fetchURL(client *http.Client, rawURL string, previousLastModifiedAt string, previousETag string) ([]byte, string, string, map[string][]string, string, string, bool, error) {
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+func loadCachedDocument(snapshotRoot string, rawURL string, relativePath string, validators fetchValidators, response httpFetchResponse) (fetchResult, error) {
+	localPath, sha256Value, bytesCount, err := summarizeExistingFile(snapshotRoot, filepath.ToSlash(relativePath))
 	if err != nil {
-		return nil, "", "", nil, "", "", false, err
+		return fetchResult{}, err
+	}
+
+	return fetchResult{
+		URL:            rawURL,
+		RelativePath:   relativePath,
+		LocalPath:      localPath,
+		SHA256:         sha256Value,
+		Bytes:          bytesCount,
+		LastModifiedAt: coalesceValidator(response.LastModifiedAt, validators.LastModifiedAt),
+		ETag:           coalesceValidator(response.ETag, validators.ETag),
+	}, nil
+}
+
+func fetchURL(ctx context.Context, client *http.Client, rawURL string, spoolDir string, validators fetchValidators) (response httpFetchResponse, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return httpFetchResponse{}, err
 	}
 
 	req.Header.Set("User-Agent", buildUserAgent())
 	req.Header.Set("Accept", "text/plain, text/markdown, text/*;q=0.9, */*;q=0.1")
-	if ifNoneMatch := normalizeETag(previousETag); ifNoneMatch != "" {
+	if ifNoneMatch := normalizeETag(validators.ETag); ifNoneMatch != "" {
 		req.Header.Set("If-None-Match", ifNoneMatch)
 	}
-	if ifModifiedSince := ifModifiedSinceHeader(previousLastModifiedAt); ifModifiedSince != "" {
+	if ifModifiedSince := ifModifiedSinceHeader(validators.LastModifiedAt); ifModifiedSince != "" {
 		req.Header.Set("If-Modified-Since", ifModifiedSince)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", "", nil, "", "", false, err
+		return httpFetchResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close response body: %w", closeErr)
+		}
+	}()
+
+	response = httpFetchResponse{
+		Status:         resp.Status,
+		ContentType:    strings.TrimSpace(resp.Header.Get("Content-Type")),
+		Headers:        copyHeader(resp.Header),
+		LastModifiedAt: normalizeLastModified(resp.Header.Get("Last-Modified")),
+		ETag:           normalizeETag(resp.Header.Get("ETag")),
+		NotModified:    resp.StatusCode == http.StatusNotModified,
+	}
 
 	if resp.StatusCode == http.StatusNotModified {
-		return nil,
-			"",
-			"",
-			nil,
-			coalesceValidator(normalizeLastModified(resp.Header.Get("Last-Modified")), previousLastModifiedAt),
-			coalesceValidator(normalizeETag(resp.Header.Get("ETag")), previousETag),
-			true,
-			nil
+		response.LastModifiedAt = coalesceValidator(response.LastModifiedAt, validators.LastModifiedAt)
+		response.ETag = coalesceValidator(response.ETag, validators.ETag)
+		return response, nil
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", "", nil, "", "", false, fmt.Errorf("unexpected HTTP %s", resp.Status)
+		return httpFetchResponse{}, fmt.Errorf("unexpected HTTP %s", resp.Status)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	spoolFile, err := os.CreateTemp(spoolDir, "fetch-*")
 	if err != nil {
-		return nil, "", "", nil, "", "", false, err
+		return httpFetchResponse{}, fmt.Errorf("create spool file: %w", err)
 	}
 
-	return body,
-		resp.Status,
-		strings.TrimSpace(resp.Header.Get("Content-Type")),
-		copyHeader(resp.Header),
-		normalizeLastModified(resp.Header.Get("Last-Modified")),
-		normalizeETag(resp.Header.Get("ETag")),
-		false,
-		nil
+	cleanupOnError := true
+	defer func() {
+		_ = spoolFile.Close()
+		if cleanupOnError {
+			_ = os.Remove(spoolFile.Name())
+		}
+	}()
+
+	hasher := sha256.New()
+	capture := &prefixCaptureWriter{limit: htmlSniffBytes}
+
+	written, err := io.Copy(io.MultiWriter(spoolFile, hasher, capture), resp.Body)
+	if err != nil {
+		return httpFetchResponse{}, fmt.Errorf("stream response body: %w", err)
+	}
+
+	response.BodyPath = spoolFile.Name()
+	response.Sniff = append([]byte(nil), capture.buf...)
+	response.SHA256 = hex.EncodeToString(hasher.Sum(nil))
+	response.Bytes = written
+
+	cleanupOnError = false
+	return response, nil
 }
 
-func ensureMarkdownResponse(status string, contentType string, headers map[string][]string, body []byte) error {
-	if looksLikeHTMLDocument(body) {
-		return &unexpectedContentError{
-			message:     "expected markdown response but received HTML document",
-			status:      status,
-			contentType: contentType,
-			headers:     headers,
-			body:        append([]byte(nil), body...),
-		}
-	}
-
-	if contentType == "" {
-		return nil
-	}
-
+func ensureMarkdownResponse(status string, contentType string, headers map[string][]string, sniff []byte, bodyPath string) error {
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
 		return &unexpectedContentError{
@@ -581,7 +969,19 @@ func ensureMarkdownResponse(status string, contentType string, headers map[strin
 			status:      status,
 			contentType: contentType,
 			headers:     headers,
-			body:        append([]byte(nil), body...),
+			sniff:       append([]byte(nil), sniff...),
+			bodyPath:    bodyPath,
+		}
+	}
+
+	if looksLikeHTMLDocument(sniff) {
+		return &unexpectedContentError{
+			message:     "expected markdown response but received HTML document",
+			status:      status,
+			contentType: contentType,
+			headers:     headers,
+			sniff:       append([]byte(nil), sniff...),
+			bodyPath:    bodyPath,
 		}
 	}
 
@@ -601,7 +1001,7 @@ func copyHeader(header http.Header) map[string][]string {
 }
 
 func looksLikeHTMLDocument(body []byte) bool {
-	trimmed := strings.TrimSpace(string(body))
+	trimmed := normalizeHTMLSniff(body)
 	if trimmed == "" {
 		return false
 	}
@@ -611,6 +1011,31 @@ func looksLikeHTMLDocument(body []byte) bool {
 		strings.HasPrefix(lower, "<html") ||
 		strings.HasPrefix(lower, "<head") ||
 		strings.HasPrefix(lower, "<body")
+}
+
+func normalizeHTMLSniff(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	trimmed = strings.TrimPrefix(trimmed, "\ufeff")
+
+	for {
+		trimmed = strings.TrimSpace(trimmed)
+		switch {
+		case strings.HasPrefix(trimmed, "<?xml"):
+			end := strings.Index(trimmed, "?>")
+			if end == -1 {
+				return trimmed
+			}
+			trimmed = trimmed[end+2:]
+		case strings.HasPrefix(trimmed, "<!--"):
+			end := strings.Index(trimmed, "-->")
+			if end == -1 {
+				return trimmed
+			}
+			trimmed = trimmed[end+3:]
+		default:
+			return trimmed
+		}
+	}
 }
 
 func buildUserAgent() string {
@@ -652,6 +1077,23 @@ func coalesceValidator(current string, previous string) string {
 		return current
 	}
 	return previous
+}
+
+func sleepWithJitter(ctx context.Context, attempt int) error {
+	base := 250 * time.Millisecond
+	wait := base * time.Duration(1<<attempt)
+	// #nosec G404 -- retry jitter only needs non-cryptographic randomness.
+	jitter := time.Duration(rand.IntN(125)) * time.Millisecond
+
+	timer := time.NewTimer(wait + jitter)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func sourcePathForLayout(layout string) string {
@@ -712,13 +1154,80 @@ func hashBytes(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func readExistingFile(relativePath string) ([]byte, error) {
-	body, err := os.ReadFile(filepath.Clean(relativePath))
+func summarizeExistingFile(root string, relativePath string) (localPath string, sha256Value string, bytesCount int64, err error) {
+	localPath, err = safeJoin(root, relativePath)
 	if err != nil {
-		return nil, fmt.Errorf("read cached file %s: %w", relativePath, err)
+		return "", "", 0, err
 	}
 
-	return body, nil
+	// #nosec G304 -- localPath is anchored to snapshotRoot via safeJoin.
+	file, err := os.Open(localPath)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("read cached file %s: %w", relativePath, err)
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close cached file %s: %w", relativePath, closeErr)
+		}
+	}()
+
+	hasher := sha256.New()
+	written, err := io.Copy(hasher, file)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("hash cached file %s: %w", relativePath, err)
+	}
+
+	return localPath, hex.EncodeToString(hasher.Sum(nil)), written, nil
+}
+
+func safeJoin(root string, relativePath string) (string, error) {
+	if root == "" {
+		return "", errors.New("missing root directory")
+	}
+
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve root directory: %w", err)
+	}
+
+	cleanRelative := filepath.Clean(filepath.FromSlash(relativePath))
+	if filepath.IsAbs(cleanRelative) {
+		return "", fmt.Errorf("absolute paths are not allowed: %s", relativePath)
+	}
+
+	targetPath := filepath.Join(absoluteRoot, cleanRelative)
+	relativeToRoot, err := filepath.Rel(absoluteRoot, targetPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %s: %w", relativePath, err)
+	}
+	if relativeToRoot == ".." || strings.HasPrefix(relativeToRoot, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes snapshot root: %s", relativePath)
+	}
+
+	return targetPath, nil
+}
+
+func cleanupSpoolFile(path string) {
+	if path == "" {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+func buildFetchFailure(diagnosticsDir string, rawURL string, relativePath string, err error) fetchFailure {
+	failure := fetchFailure{URL: rawURL, Error: err.Error()}
+
+	var unexpected *unexpectedContentError
+	if errors.As(err, &unexpected) {
+		diagnosticPath, diagnosticErr := writeUnexpectedContentDiagnostic(diagnosticsDir, rawURL, relativePath, unexpected)
+		if diagnosticErr != nil {
+			failure.Error = fmt.Sprintf("%s (failed to write diagnostic: %v)", failure.Error, diagnosticErr)
+		} else {
+			failure.DiagnosticPath = diagnosticPath
+		}
+	}
+
+	return failure
 }
 
 func writeUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, relativePath string, unexpected *unexpectedContentError) (string, error) {
@@ -728,7 +1237,7 @@ func writeUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, rela
 
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(unexpected.contentType, ";")[0]))
 	bodyExtension := ".txt"
-	if mediaType == "text/html" || mediaType == "application/xhtml+xml" || looksLikeHTMLDocument(unexpected.body) {
+	if mediaType == "text/html" || mediaType == "application/xhtml+xml" || looksLikeHTMLDocument(unexpected.sniff) {
 		bodyExtension = ".html"
 	}
 
@@ -738,11 +1247,10 @@ func writeUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, rela
 	bodyPath := filepath.Join(diagnosticsDir, filepath.FromSlash(bodyRelativePath))
 	metaPath := filepath.Join(diagnosticsDir, filepath.FromSlash(metaRelativePath))
 
-	if err := os.MkdirAll(filepath.Dir(bodyPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(bodyPath), 0o750); err != nil {
 		return "", fmt.Errorf("create diagnostics directory: %w", err)
 	}
-
-	if err := os.WriteFile(bodyPath, unexpected.body, 0o644); err != nil {
+	if err := copyFile(unexpected.bodyPath, bodyPath); err != nil {
 		return "", fmt.Errorf("write diagnostic body: %w", err)
 	}
 
@@ -770,7 +1278,7 @@ func writeUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, rela
 	}
 	metadataBytes = append(metadataBytes, '\n')
 
-	if err := os.WriteFile(metaPath, metadataBytes, 0o644); err != nil {
+	if err := os.WriteFile(metaPath, metadataBytes, 0o600); err != nil {
 		return "", fmt.Errorf("write diagnostic metadata: %w", err)
 	}
 
@@ -810,8 +1318,49 @@ func buildManifest(source fetchResult, documents []fetchResult, skipped []skippe
 	return manifestData
 }
 
+func buildDiagnosticManifest(sourceURL string, sourcePath string, source *fetchResult, documents []fetchResult, skipped []skippedEntry, failures []fetchFailure) manifest {
+	manifestData := manifest{
+		SourceURL:     sourceURL,
+		SourcePath:    filepath.ToSlash(sourcePath),
+		DocumentCount: len(documents),
+		SkippedCount:  len(skipped),
+		Failures:      append([]fetchFailure(nil), failures...),
+	}
+	if source != nil {
+		manifestData.SourceSHA256 = source.SHA256
+		manifestData.SourceLastModifiedAt = source.LastModifiedAt
+		manifestData.SourceETag = source.ETag
+	}
+	if len(skipped) > 0 {
+		manifestData.Skipped = append([]skippedEntry(nil), skipped...)
+	}
+	if len(documents) > 0 {
+		manifestData.Documents = make([]manifestEntry, 0, len(documents))
+		for _, document := range documents {
+			manifestData.Documents = append(manifestData.Documents, manifestEntry{
+				URL:            document.URL,
+				Path:           filepath.ToSlash(document.RelativePath),
+				SHA256:         document.SHA256,
+				Bytes:          document.Bytes,
+				LastModifiedAt: document.LastModifiedAt,
+				ETag:           document.ETag,
+			})
+		}
+	}
+	return manifestData
+}
+
+func writeDiagnosticManifest(manifestPath string, manifestData manifest) {
+	if manifestPath == "" {
+		return
+	}
+	if err := writeManifest(manifestPath, manifestData); err != nil {
+		log.Printf("Failed to write diagnostics manifest %s: %v", manifestPath, err)
+	}
+}
+
 func writeManifest(manifestPath string, manifestData manifest) error {
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
 		return fmt.Errorf("create manifest directory: %w", err)
 	}
 
@@ -821,7 +1370,7 @@ func writeManifest(manifestPath string, manifestData manifest) error {
 	}
 	manifestBytes = append(manifestBytes, '\n')
 
-	if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, manifestBytes, 0o600); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
 
@@ -830,7 +1379,7 @@ func writeManifest(manifestPath string, manifestData manifest) error {
 
 func stageOutput(outputDir string, source fetchResult, documents []fetchResult) error {
 	parentDir := filepath.Dir(outputDir)
-	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+	if err := os.MkdirAll(parentDir, 0o750); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
 	}
 
@@ -866,39 +1415,105 @@ func stageOutput(outputDir string, source fetchResult, documents []fetchResult) 
 
 func writeResult(root string, result fetchResult) error {
 	targetPath := filepath.Join(root, filepath.FromSlash(result.RelativePath))
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return fmt.Errorf("create directory for %s: %w", targetPath, err)
 	}
 
-	if err := os.WriteFile(targetPath, result.Body, 0o644); err != nil {
+	if err := copyFile(result.LocalPath, targetPath); err != nil {
 		return fmt.Errorf("write %s: %w", targetPath, err)
 	}
 
 	return nil
 }
 
+func copyFile(sourcePath string, targetPath string) (err error) {
+	// #nosec G304 -- sourcePath is a local spool or cached snapshot path produced by the crawler.
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+
+	// #nosec G304 -- targetPath is a staged output path rooted under a temp directory controlled by the crawler.
+	targetFile, err := os.Create(targetPath)
+	if err != nil {
+		_ = sourceFile.Close()
+		return err
+	}
+
+	success := false
+	defer func() {
+		if !success {
+			_ = targetFile.Close()
+			_ = sourceFile.Close()
+			_ = os.Remove(targetPath)
+		}
+	}()
+
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		return err
+	}
+	if err := sourceFile.Close(); err != nil {
+		return err
+	}
+	if err := targetFile.Close(); err != nil {
+		return err
+	}
+	// #nosec G302 -- tracked snapshot files are intended to remain world-readable in the checked-out repo.
+	if err := os.Chmod(targetPath, 0o644); err != nil {
+		return err
+	}
+
+	success = true
+	return nil
+}
+
 func replaceDir(tempDir string, outputDir string) error {
 	backupDir := outputDir + ".bak"
-	_ = os.RemoveAll(backupDir)
 
-	if _, err := os.Stat(outputDir); err == nil {
+	outputExists := pathExists(outputDir)
+	backupExists := pathExists(backupDir)
+
+	if backupExists && !outputExists {
+		if err := os.Rename(backupDir, outputDir); err != nil {
+			return fmt.Errorf("restore backup output: %w", err)
+		}
+		outputExists = true
+		backupExists = false
+	}
+
+	if backupExists && outputExists {
+		if err := os.RemoveAll(backupDir); err != nil {
+			return fmt.Errorf("remove stale backup directory: %w", err)
+		}
+		backupExists = false
+	}
+
+	if outputExists {
 		if err := os.Rename(outputDir, backupDir); err != nil {
 			return fmt.Errorf("backup existing output: %w", err)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat output directory: %w", err)
+		backupExists = true
 	}
 
 	if err := os.Rename(tempDir, outputDir); err != nil {
-		if _, restoreErr := os.Stat(backupDir); restoreErr == nil {
-			_ = os.Rename(backupDir, outputDir)
+		if backupExists {
+			if restoreErr := os.Rename(backupDir, outputDir); restoreErr != nil {
+				return fmt.Errorf("activate new output: %w (restore backup: %v)", err, restoreErr)
+			}
 		}
 		return fmt.Errorf("activate new output: %w", err)
 	}
 
-	if err := os.RemoveAll(backupDir); err != nil {
-		return fmt.Errorf("remove backup directory: %w", err)
+	if backupExists {
+		if err := os.RemoveAll(backupDir); err != nil {
+			log.Printf("Warning: failed to remove backup directory %s: %v", backupDir, err)
+		}
 	}
 
 	return nil
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

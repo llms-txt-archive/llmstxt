@@ -74,7 +74,7 @@ jobs:
           ARTIFACT_DIR: ${{ steps.artifact.outputs.artifact_dir }}
         run: |
           if [ -f "$ARTIFACT_DIR/snapshot.patch" ]; then
-            perl -0777 -pe 's/<!--.*?-->//gs' "$ARTIFACT_DIR/snapshot.patch" > "$ARTIFACT_DIR/snapshot-sanitized.patch" || true
+            perl -0777 -pe 's/<!--.*?-->//gs' "$ARTIFACT_DIR/snapshot.patch" > "$ARTIFACT_DIR/snapshot-sanitized.patch"
           fi
 
       - name: Run Codex dry run summary

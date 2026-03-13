@@ -35,8 +35,8 @@ runs:
         key_count=$(jq '(.key_changes // []) | length' "$SUMMARY_JSON")
 
         errors=()
-        if [[ -z "$title" || ! "$title" =~ ^sync:\  ]]; then
-          errors+=("commit_title must start with 'sync: '")
+        if [[ -z "$title" || ! "$title" =~ ^sync:\ [A-Za-z0-9\`\(\)][A-Za-z0-9\`\(\),/&\'\ .-]{4,62}[A-Za-z0-9\`\)]$ ]]; then
+          errors+=("commit_title must match the required 'sync: <finished phrase>' format")
         fi
         # Reject dangling suffixes/placeholder fragments
         last_word=${title##* }
@@ -45,10 +45,10 @@ runs:
             errors+=("commit_title ends with an invalid suffix: $last_word")
             ;;
         esac
-        if [[ "$release_title" =~ (in progress|analysis in progress|snapshot diff analysis) ]]; then
+        if [[ "$release_title" =~ (in\ progress|analysis\ in\ progress|snapshot\ diff\ analysis|inspect\ snapshot\ diff\ inputs) ]]; then
           errors+=("release_title contains placeholder text")
         fi
-        if [[ "$notes" =~ (in progress|analysis in progress|snapshot diff analysis) ]]; then
+        if [[ "$notes" =~ (in\ progress|analysis\ in\ progress|snapshot\ diff\ analysis|inspect\ snapshot\ diff\ inputs) ]]; then
           errors+=("release_notes_markdown contains placeholder text")
         fi
         # Require core sections
@@ -59,6 +59,9 @@ runs:
         done
         if (( key_count < 3 )); then
           errors+=("key_changes must include at least 3 items")
+        fi
+        if jq -r '.key_changes[]? // empty' "$SUMMARY_JSON" | grep -Eiq '^(inspect|review|draft)\b'; then
+          errors+=("key_changes contains placeholder task text")
         fi
 
         if (( ${#errors[@]} )); then

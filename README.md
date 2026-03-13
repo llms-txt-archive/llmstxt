@@ -37,6 +37,8 @@ It also supports release-backed conditional fetch state:
 - reads a previous `manifest.json` asset with `-previous-manifest`
 - writes a fresh release asset with `-manifest-out`
 - sends both `If-None-Match` and `If-Modified-Since` when prior validators are available
+- streams fetched bodies to disk while hashing, so large docs do not accumulate in memory
+- defaults to HTTPS-only, source-host-only crawling; `-allowed-hosts` can extend that allowlist for intentional cross-host indexes
 - only mirrors `.md` URLs from `llms.txt`
 - rejects `.md` URLs that actually return HTML instead of raw markdown
 - reports skipped non-Markdown URLs in the manifest asset
@@ -62,6 +64,17 @@ go run ./cmd/claudecodedocs \
   -out /tmp/platform-generated \
   -layout root \
   -manifest-out /tmp/platform-manifest.json
+```
+
+If a source intentionally spans more than one hostname, extend the default host allowlist:
+
+```bash
+go run ./cmd/claudecodedocs \
+  -source https://example.com/llms.txt \
+  -allowed-hosts docs.examplecdn.com \
+  -out /tmp/example-generated \
+  -layout root \
+  -manifest-out /tmp/example-manifest.json
 ```
 
 README rendering example:
@@ -90,6 +103,7 @@ Snapshot repos should call `.github/workflows/snapshot-sync.yml` with:
 - `repo_title`
 - `schedule_label`
 - `tool_ref`
+- `allowed_hosts` when a source intentionally links to Markdown on additional hosts
 - `tool_repo_token` when this tooling repo is private
 
 The reusable workflow:

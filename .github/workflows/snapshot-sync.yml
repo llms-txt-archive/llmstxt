@@ -21,6 +21,10 @@ on:
       tool_ref:
         required: true
         type: string
+      allowed_hosts:
+        required: false
+        type: string
+        default: ""
       release_history_limit:
         required: false
         type: number
@@ -102,10 +106,14 @@ jobs:
         id: crawl
         env:
           SOURCE_URL: ${{ inputs.source_url }}
+          ALLOWED_HOSTS: ${{ inputs.allowed_hosts }}
         run: |
           manifest_args=()
           if [ -f "$RUNNER_TEMP/previous-release/manifest.json" ]; then
             manifest_args+=( -previous-manifest "$RUNNER_TEMP/previous-release/manifest.json" )
+          fi
+          if [ -n "$ALLOWED_HOSTS" ]; then
+            manifest_args+=( -allowed-hosts "$ALLOWED_HOSTS" )
           fi
 
           set +e
@@ -176,17 +184,19 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_HISTORY_LIMIT: ${{ inputs.release_history_limit }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=${{ inputs.release_history_limit }}" > "$RUNNER_TEMP/releases.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=${RELEASE_HISTORY_LIMIT}" > "$RUNNER_TEMP/releases.json"
 
       - name: Compute release envelope
         if: steps.detect.outputs.changed == 'true'
         id: release_envelope
         env:
           GITHUB_SERVER_URL: ${{ github.server_url }}
+          LATEST_TAG: ${{ steps.release_state.outputs.latest_tag }}
         run: |
           published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          if [ -z "${{ steps.release_state.outputs.latest_tag }}" ]; then
+          if [ -z "$LATEST_TAG" ]; then
             codex_enabled="false"
             release_tag="initial"
           else
@@ -222,7 +232,14 @@ jobs:
 
           cp "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/codex-input/snapshot/manifest.json"
 
-          jq -n             --arg repository "$REPOSITORY"             --arg site_name "$SITE_NAME"             --arg site_url "$SITE_URL"             --arg source_url "$SOURCE_URL"             --arg release_tag "$RELEASE_TAG"             --arg published_at "$PUBLISHED_AT"             '{
+          jq -n \
+            --arg repository "$REPOSITORY" \
+            --arg site_name "$SITE_NAME" \
+            --arg site_url "$SITE_URL" \
+            --arg source_url "$SOURCE_URL" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg published_at "$PUBLISHED_AT" \
+            '{
               repository: $repository,
               site_name: $site_name,
               site_url: $site_url,
@@ -284,19 +301,13 @@ jobs:
             commit_subject="initial snapshot"
             commit_body=""
             release_name="Initial release"
-            printf '## Summary
-
-Initial automated snapshot release.
-' > "$release_notes_path"
+            printf '## Summary\n\nInitial automated snapshot release.\n' > "$release_notes_path"
           fi
 
           {
-            printf '%s
-' "$commit_subject"
+            printf '%s\n' "$commit_subject"
             if [ -n "$commit_body" ]; then
-              printf '
-%s
-' "$commit_body"
+              printf '\n%s\n' "$commit_body"
             fi
           } > "$commit_message_path"
 
@@ -312,12 +323,18 @@ Initial automated snapshot release.
           PUBLISHED_AT: ${{ steps.release_envelope.outputs.published_at }}
           RELEASE_URL: ${{ steps.release_envelope.outputs.release_url }}
         run: |
-          jq             --arg name "$RELEASE_NAME"             --arg tag "$RELEASE_TAG"             --arg published "$PUBLISHED_AT"             --arg url "$RELEASE_URL"             '([{
+          jq \
+            --arg name "$RELEASE_NAME" \
+            --arg tag "$RELEASE_TAG" \
+            --arg published "$PUBLISHED_AT" \
+            --arg url "$RELEASE_URL" \
+            '([{
               name: $name,
               tag_name: $tag,
               published_at: $published,
               html_url: $url
-            }] + .)'             "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/releases-with-current.json"
+            }] + .)' \
+            "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/releases-with-current.json"
 
       - name: Render generated README
         if: steps.detect.outputs.changed == 'true'
@@ -331,7 +348,17 @@ Initial automated snapshot release.
           document_count="$(jq -r '.document_count' "$RUNNER_TEMP/manifest.json")"
           skipped_count="$(jq -r '.skipped_count // 0' "$RUNNER_TEMP/manifest.json")"
 
-          snapshotreadme             -template "$RUNNER_TEMP/snapshot-readme.md.tmpl"             -out "README.md"             -title "$REPO_TITLE"             -site-name "$SITE_NAME"             -site-url "$SITE_URL"             -source-url "$SOURCE_URL"             -schedule-label "$SCHEDULE_LABEL"             -document-count "$document_count"             -skipped-count "$skipped_count"             -releases-json "$RUNNER_TEMP/releases-with-current.json"
+          snapshotreadme \
+            -template "$RUNNER_TEMP/snapshot-readme.md.tmpl" \
+            -out "README.md" \
+            -title "$REPO_TITLE" \
+            -site-name "$SITE_NAME" \
+            -site-url "$SITE_URL" \
+            -source-url "$SOURCE_URL" \
+            -schedule-label "$SCHEDULE_LABEL" \
+            -document-count "$document_count" \
+            -skipped-count "$skipped_count" \
+            -releases-json "$RUNNER_TEMP/releases-with-current.json"
 
       - name: Configure git author
         if: steps.detect.outputs.changed == 'true'
@@ -359,4 +386,8 @@ Initial automated snapshot release.
           RELEASE_NAME: ${{ steps.release_meta.outputs.release_name }}
           RELEASE_NOTES_PATH: ${{ steps.release_meta.outputs.release_notes_path }}
         run: |
-          gh release create "$RELEASE_TAG"             --repo "$GITHUB_REPOSITORY"             --title "$RELEASE_NAME"             --notes-file "$RELEASE_NOTES_PATH"             "$RUNNER_TEMP/manifest.json#manifest.json"
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_NAME" \
+            --notes-file "$RELEASE_NOTES_PATH" \
+            "$RUNNER_TEMP/manifest.json#manifest.json"

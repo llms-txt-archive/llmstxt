@@ -114,7 +114,7 @@ func run(cfg config) error {
 		Releases:      releases,
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.outputPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.outputPath), 0o750); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
@@ -122,16 +122,20 @@ func run(cfg config) error {
 	if err != nil {
 		return fmt.Errorf("create output file: %w", err)
 	}
-	defer outputFile.Close()
 
 	if err := tmpl.Execute(outputFile, data); err != nil {
+		_ = outputFile.Close()
 		return fmt.Errorf("render template: %w", err)
+	}
+	if err := outputFile.Close(); err != nil {
+		return fmt.Errorf("close output file: %w", err)
 	}
 
 	return nil
 }
 
 func loadReleases(releasesPath string) ([]releaseView, error) {
+	// #nosec G304 -- releasesPath is a local CLI input to a checked-out JSON file.
 	body, err := os.ReadFile(releasesPath)
 	if err != nil {
 		return nil, fmt.Errorf("read releases json: %w", err)
