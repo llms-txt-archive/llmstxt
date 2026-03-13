@@ -45,14 +45,21 @@ jobs:
             exit 0
           fi
 
+          git add -N snapshot
+          git status --porcelain -- snapshot | grep -v 'snapshot/manifest\.json$' > snapshot-status.txt || true
+
+          if [ ! -s snapshot-status.txt ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Only snapshot/manifest.json changed; ignoring metadata-only diff."
+            exit 0
+          fi
+
           echo "changed=true" >> "$GITHUB_OUTPUT"
           manifest_sha="$(sha256sum snapshot/manifest.json | awk '{print $1}')"
           echo "manifest_sha=$manifest_sha" >> "$GITHUB_OUTPUT"
 
-          git add -N snapshot
-          git status --porcelain -- snapshot > snapshot-status.txt
-          git diff --stat -- snapshot > snapshot-diffstat.txt
-          git diff --unified=3 -- snapshot > snapshot.patch
+          git diff --stat -- snapshot ':(exclude)snapshot/manifest.json' > snapshot-diffstat.txt
+          git diff --unified=3 -- snapshot ':(exclude)snapshot/manifest.json' > snapshot.patch
 
           changed_files="$(wc -l < snapshot-status.txt | tr -d ' ')"
           echo "changed_files=$changed_files" >> "$GITHUB_OUTPUT"

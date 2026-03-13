@@ -66,7 +66,8 @@ The included workflow:
 - runs every hour and on manual dispatch
 - executes `go test ./...`
 - runs the crawler
-- uploads diff artifacts when it sees a change
+- ignores metadata-only changes when `snapshot/manifest.json` is the only modified file
+- uploads diff artifacts when crawled source files actually change
 - posts a Discord message when a new diff hash is detected and `DISCORD_WEBHOOK_URL` is configured
 
 ## Notes
