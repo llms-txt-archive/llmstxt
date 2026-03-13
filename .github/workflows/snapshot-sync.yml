@@ -260,7 +260,7 @@ jobs:
 
       - name: Run Codex release generation
         if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
-        uses: ./.github/actions/codex-release-generate
+        uses: ./.toolrepo/.github/actions/codex-release-generate
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           prompt_file: ${{ runner.temp }}/codex-docs-diff-summary.md
