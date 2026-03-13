@@ -96,10 +96,12 @@ runs:
         jq -r '.release_notes_markdown' "$SUMMARY_JSON" > "$outdir/codex-release-notes.md"
         jq -r '.key_changes[]' "$SUMMARY_JSON" > "$outdir/codex-key-changes.txt"
         {
-          echo "commit_title=$(cat "$outdir/codex-commit-title.txt")";
-          echo "commit_body=$(cat "$outdir/codex-commit-body.txt")";
-          echo "release_title=$(cat "$outdir/codex-release-title.txt")";
-          echo "release_notes_file=$outdir/codex-release-notes.md";
+          echo "commit_title=$(cat "$outdir/codex-commit-title.txt")"
+          echo "commit_body<<__CODEX_COMMIT_BODY__"
+          cat "$outdir/codex-commit-body.txt"
+          echo "__CODEX_COMMIT_BODY__"
+          echo "release_title=$(cat "$outdir/codex-release-title.txt")"
+          echo "release_notes_file=$outdir/codex-release-notes.md"
         } >> "$GITHUB_OUTPUT"
 
 inputs:
