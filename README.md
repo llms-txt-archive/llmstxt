@@ -110,3 +110,15 @@ If this tooling repo is private, the caller repo must provide a secret with read
 - Snapshot repos mirror only `.md` URLs listed in `llms.txt`.
 - If any fetch fails, the workflow uploads diagnostics but does not publish a commit or release.
 - Removed Markdown URLs are deleted from the tracked tree on successful syncs.
+
+## Codex defaults
+
+The optional Codex dry-run workflow defaults to:
+
+- `CODEX_MODEL=gpt-5.4`
+- `CODEX_EFFORT=high`
+
+You only need to configure `OPENAI_API_KEY` for the default path. If you want to override the model or reasoning effort later, set repository variables:
+
+- `CODEX_MODEL`
+- `CODEX_EFFORT`

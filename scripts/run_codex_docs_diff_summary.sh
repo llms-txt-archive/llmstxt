@@ -10,7 +10,7 @@ model="gpt-5.4"
 artifact_dir=""
 output_file=""
 keep_workdir="false"
-reasoning_effort=""
+reasoning_effort="high"
 max_attempts=2
 
 usage() {

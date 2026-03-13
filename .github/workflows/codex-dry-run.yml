@@ -19,6 +19,8 @@ jobs:
     env:
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_MODEL: ${{ vars.CODEX_MODEL || 'gpt-5.4' }}
+      CODEX_EFFORT: ${{ vars.CODEX_EFFORT || 'high' }}
 
     steps:
       - name: Check out repository
@@ -77,7 +79,7 @@ jobs:
           safety-strategy: drop-sudo
           codex-home: ${{ runner.temp }}/codex-home
           codex-args: >-
-            ["--model","gpt-5.4","--skip-git-repo-check","--ephemeral","--cd","${{ steps.artifact.outputs.artifact_dir }}","--output-schema","${{ github.workspace }}/.github/codex/schemas/docs-diff-summary.schema.json"]
+            ["--model","${{ env.CODEX_MODEL }}","-c","model_reasoning_effort=\"${{ env.CODEX_EFFORT }}\"","--skip-git-repo-check","--ephemeral","--cd","${{ steps.artifact.outputs.artifact_dir }}","--output-schema","${{ github.workspace }}/.github/codex/schemas/docs-diff-summary.schema.json"]
 
       - name: Split structured outputs
         run: |
