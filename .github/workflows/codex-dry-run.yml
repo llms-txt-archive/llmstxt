@@ -89,7 +89,6 @@ jobs:
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           prompt_file: .github/codex/prompts/docs-diff-summary.md
-          output_schema_file: .github/codex/schemas/docs-diff-summary.schema.json
           working_directory: ${{ runner.temp }}/codex-input
           output_file: ${{ runner.temp }}/codex-docs-summary.json
           model: ${{ env.CODEX_MODEL }}

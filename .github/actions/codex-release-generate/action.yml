@@ -10,7 +10,6 @@ runs:
         openai-api-key: ${{ inputs.openai_api_key }}
         prompt-file: ${{ inputs.prompt_file }}
         output-file: ${{ inputs.output_file }}
-        output-schema-file: ${{ inputs.output_schema_file }}
         working-directory: ${{ inputs.working_directory }}
         sandbox: read-only
         safety-strategy: drop-sudo
@@ -44,9 +43,6 @@ inputs:
     required: true
   prompt_file:
     description: "Prompt file path"
-    required: true
-  output_schema_file:
-    description: "Output JSON schema file"
     required: true
   working_directory:
     description: "Working directory for Codex"

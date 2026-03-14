@@ -84,7 +84,6 @@ jobs:
         run: |
           cp .toolrepo/templates/snapshot-readme.md.tmpl "$RUNNER_TEMP/snapshot-readme.md.tmpl"
           cp .toolrepo/.github/codex/prompts/docs-diff-summary.md "$RUNNER_TEMP/codex-docs-diff-summary.md"
-          cp .toolrepo/.github/codex/schemas/docs-diff-summary.schema.json "$RUNNER_TEMP/codex-docs-diff-summary.schema.json"
           cp .toolrepo/.github/scripts/validate_codex_release.py "$RUNNER_TEMP/validate_codex_release.py"
           cp .toolrepo/.github/scripts/emit_codex_release_outputs.py "$RUNNER_TEMP/emit_codex_release_outputs.py"
 
@@ -283,7 +282,6 @@ jobs:
           prompt_file: ${{ runner.temp }}/codex-docs-diff-summary.md
           output_file: ${{ runner.temp }}/codex-docs-summary.json
           working_directory: ${{ runner.temp }}/codex-input
-          output_schema_file: ${{ runner.temp }}/codex-docs-diff-summary.schema.json
           model: ${{ env.CODEX_MODEL }}
           effort: ${{ env.CODEX_EFFORT }}
           validator_script: ${{ runner.temp }}/validate_codex_release.py
