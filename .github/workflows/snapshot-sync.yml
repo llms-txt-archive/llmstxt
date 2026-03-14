@@ -85,6 +85,8 @@ jobs:
           cp .toolrepo/templates/snapshot-readme.md.tmpl "$RUNNER_TEMP/snapshot-readme.md.tmpl"
           cp .toolrepo/.github/codex/prompts/docs-diff-summary.md "$RUNNER_TEMP/codex-docs-diff-summary.md"
           cp .toolrepo/.github/codex/schemas/docs-diff-summary.schema.json "$RUNNER_TEMP/codex-docs-diff-summary.schema.json"
+          cp .toolrepo/.github/scripts/validate_codex_release.py "$RUNNER_TEMP/validate_codex_release.py"
+          cp .toolrepo/.github/scripts/emit_codex_release_outputs.py "$RUNNER_TEMP/emit_codex_release_outputs.py"
 
       - name: Resolve latest release state
         id: release_state
@@ -219,15 +221,16 @@ jobs:
           RELEASE_TAG: ${{ steps.release_envelope.outputs.release_tag }}
           PUBLISHED_AT: ${{ steps.release_envelope.outputs.published_at }}
         run: |
-          mkdir -p "$RUNNER_TEMP/codex-input/snapshot"
+          mkdir -p "$RUNNER_TEMP/codex-input"
 
           git status --porcelain -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot-status.txt"
           git diff --stat -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot-diffstat.txt"
-          git diff -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot.patch"
-          # LLM-only sanitized copy: strip HTML comments only; keep original patch unchanged
-          perl -0777 -pe 's/<!--.*?-->//gs' "$RUNNER_TEMP/codex-input/snapshot.patch" > "$RUNNER_TEMP/codex-input/snapshot-sanitized.patch"
+          git diff -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' \
+            | perl -0777 -pe 's/<!--.*?-->//gs' > "$RUNNER_TEMP/codex-input/snapshot-sanitized.patch"
 
-          cp "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/codex-input/snapshot/manifest.json"
+          document_count="$(jq -r '.document_count' "$RUNNER_TEMP/manifest.json")"
+          skipped_count="$(jq -r '.skipped_count // 0' "$RUNNER_TEMP/manifest.json")"
+          failure_count="$(jq -r '.failures | length' "$RUNNER_TEMP/manifest.json")"
 
           jq -n \
             --arg repository "$REPOSITORY" \
@@ -236,14 +239,31 @@ jobs:
             --arg source_url "$SOURCE_URL" \
             --arg release_tag "$RELEASE_TAG" \
             --arg published_at "$PUBLISHED_AT" \
+            --argjson document_count "$document_count" \
+            --argjson skipped_count "$skipped_count" \
+            --argjson failure_count "$failure_count" \
             '{
               repository: $repository,
               site_name: $site_name,
               site_url: $site_url,
               source_url: $source_url,
               release_tag: $release_tag,
-              published_at: $published_at
+              published_at: $published_at,
+              document_count: $document_count,
+              skipped_count: $skipped_count,
+              failure_count: $failure_count
             }' > "$RUNNER_TEMP/codex-input/snapshot-context.json"
+
+      - name: Upload Codex input bundle
+        if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-codex-input-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codex-input/snapshot-status.txt
+            ${{ runner.temp }}/codex-input/snapshot-diffstat.txt
+            ${{ runner.temp }}/codex-input/snapshot-sanitized.patch
+            ${{ runner.temp }}/codex-input/snapshot-context.json
 
       - name: Validate Codex configuration
         if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
@@ -266,6 +286,8 @@ jobs:
           output_schema_file: ${{ runner.temp }}/codex-docs-diff-summary.schema.json
           model: ${{ env.CODEX_MODEL }}
           effort: ${{ env.CODEX_EFFORT }}
+          validator_script: ${{ runner.temp }}/validate_codex_release.py
+          emitter_script: ${{ runner.temp }}/emit_codex_release_outputs.py
 
       - name: Upload Codex outputs
         if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'

@@ -1,2 +1,4 @@
 /claudecodedocs
 /snapshot.bak/
+__pycache__/
+*.pyc

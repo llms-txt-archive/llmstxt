@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -59,6 +62,16 @@ func readFile(t *testing.T, path string) string {
 	return string(body)
 }
 
+func mustParseURL(t *testing.T, rawURL string) *url.URL {
+	t.Helper()
+
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) error = %v", rawURL, err)
+	}
+	return parsedURL
+}
+
 func withoutRetrySleep(t *testing.T) {
 	t.Helper()
 
@@ -67,6 +80,102 @@ func withoutRetrySleep(t *testing.T) {
 	t.Cleanup(func() {
 		retrySleepWithJitter = previous
 	})
+}
+
+func withTestFlagSet(t *testing.T, args []string) {
+	t.Helper()
+
+	previousArgs := os.Args
+	previousFlagSet := flag.CommandLine
+	testFlagSet := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	testFlagSet.SetOutput(io.Discard)
+
+	os.Args = args
+	flag.CommandLine = testFlagSet
+
+	t.Cleanup(func() {
+		os.Args = previousArgs
+		flag.CommandLine = previousFlagSet
+	})
+}
+
+func TestParseFlagsUsesDefaults(t *testing.T) {
+	withTestFlagSet(t, []string{
+		"claudecodedocs",
+		"-source", "https://docs.example.com/llms.txt",
+		"-out", filepath.Join(t.TempDir(), "snapshot"),
+		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
+	})
+
+	cfg := parseFlags()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() error = %v", err)
+	}
+
+	if cfg.SourceURL != "https://docs.example.com/llms.txt" {
+		t.Fatalf("parseFlags() source = %q", cfg.SourceURL)
+	}
+	if cfg.Layout != defaultLayout {
+		t.Fatalf("parseFlags() layout = %q, want %q", cfg.Layout, defaultLayout)
+	}
+	if cfg.Timeout != defaultTimeout {
+		t.Fatalf("parseFlags() timeout = %v, want %v", cfg.Timeout, defaultTimeout)
+	}
+	if cfg.Concurrency != defaultWorkers {
+		t.Fatalf("parseFlags() concurrency = %d, want %d", cfg.Concurrency, defaultWorkers)
+	}
+	if cfg.SnapshotRoot != wd {
+		t.Fatalf("parseFlags() snapshot_root = %q, want %q", cfg.SnapshotRoot, wd)
+	}
+}
+
+func TestParseFlagsNormalizesConcurrencyFloor(t *testing.T) {
+	withTestFlagSet(t, []string{
+		"claudecodedocs",
+		"-source", "https://docs.example.com/llms.txt",
+		"-out", filepath.Join(t.TempDir(), "snapshot"),
+		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
+		"-concurrency", "0",
+		"-layout", layoutRoot,
+	})
+
+	cfg := parseFlags()
+	if cfg.Concurrency != 1 {
+		t.Fatalf("parseFlags() concurrency = %d, want 1", cfg.Concurrency)
+	}
+	if cfg.Layout != layoutRoot {
+		t.Fatalf("parseFlags() layout = %q, want %q", cfg.Layout, layoutRoot)
+	}
+}
+
+func TestMainInvokesRunApp(t *testing.T) {
+	withTestFlagSet(t, []string{
+		"claudecodedocs",
+		"-source", "https://docs.example.com/llms.txt",
+		"-out", filepath.Join(t.TempDir(), "snapshot"),
+		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
+	})
+
+	previousRunApp := runApp
+	t.Cleanup(func() {
+		runApp = previousRunApp
+	})
+
+	called := false
+	runApp = func(_ context.Context, cfg config) error {
+		called = true
+		if cfg.SourceURL != "https://docs.example.com/llms.txt" {
+			t.Fatalf("main() passed source = %q", cfg.SourceURL)
+		}
+		return nil
+	}
+
+	main()
+
+	if !called {
+		t.Fatal("main() did not invoke runApp")
+	}
 }
 
 func TestExtractLinksDeduplicatesAndSortsMarkdownLinks(t *testing.T) {
@@ -195,6 +304,33 @@ func TestURLPolicyAllowedHostsOverride(t *testing.T) {
 
 	if err := policy.Validate("https://platform.claude.com/docs/en/overview.md"); err != nil {
 		t.Fatalf("policy.Validate(allowed host) error = %v", err)
+	}
+}
+
+func TestHTTPClientRedirectAllowsConfiguredHost(t *testing.T) {
+	client := newHTTPClient(5*time.Second, mustPolicy(t, "https://docs.example.com/llms.txt", "cdn.example.com"))
+
+	err := client.CheckRedirect(
+		&http.Request{URL: mustParseURL(t, "https://cdn.example.com/docs/en/overview.md")},
+		[]*http.Request{{URL: mustParseURL(t, "https://docs.example.com/docs/en/overview.md")}},
+	)
+	if err != nil {
+		t.Fatalf("CheckRedirect() error = %v", err)
+	}
+}
+
+func TestHTTPClientRedirectRejectsDisallowedHost(t *testing.T) {
+	client := newHTTPClient(5*time.Second, mustPolicy(t, "https://docs.example.com/llms.txt", ""))
+
+	err := client.CheckRedirect(
+		&http.Request{URL: mustParseURL(t, "https://evil.example.net/docs/en/overview.md")},
+		[]*http.Request{{URL: mustParseURL(t, "https://docs.example.com/docs/en/overview.md")}},
+	)
+	if err == nil {
+		t.Fatal("CheckRedirect() error = nil, want rejection")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("CheckRedirect() error = %v, want disallowed host", err)
 	}
 }
 
@@ -431,6 +567,43 @@ func TestWriteUnexpectedContentDiagnostic(t *testing.T) {
 	metadata := readFile(t, metadataPath)
 	if !strings.Contains(metadata, `"body_path": "docs/skills.md.unexpected-content.html"`) {
 		t.Fatalf("diagnostic metadata missing body path: %s", metadata)
+	}
+}
+
+func TestBuildDiagnosticManifestIncludesFailuresAndDocuments(t *testing.T) {
+	source := fetchResult{
+		URL:            "https://docs.example.com/llms.txt",
+		RelativePath:   "llms.txt",
+		SHA256:         "source-sha",
+		LastModifiedAt: "2026-03-13T06:36:52Z",
+		ETag:           `"source-etag"`,
+	}
+	documents := []fetchResult{{
+		URL:            "https://docs.example.com/docs/en/overview.md",
+		RelativePath:   filepath.Join("docs", "en", "overview.md"),
+		SHA256:         "doc-sha",
+		Bytes:          42,
+		LastModifiedAt: "2026-03-13T06:37:00Z",
+		ETag:           `"doc-etag"`,
+	}}
+	skipped := []skippedEntry{{URL: "https://docs.example.com", Reason: nonMarkdownReason}}
+	failures := []fetchFailure{{URL: "https://docs.example.com/docs/en/missing.md", Error: "404"}}
+
+	manifestData := buildDiagnosticManifest(source.URL, source.RelativePath, &source, documents, skipped, failures)
+	if manifestData.SourceSHA256 != "source-sha" {
+		t.Fatalf("buildDiagnosticManifest() source sha = %q", manifestData.SourceSHA256)
+	}
+	if manifestData.DocumentCount != 1 {
+		t.Fatalf("buildDiagnosticManifest() document_count = %d, want 1", manifestData.DocumentCount)
+	}
+	if len(manifestData.Failures) != 1 {
+		t.Fatalf("buildDiagnosticManifest() failures len = %d, want 1", len(manifestData.Failures))
+	}
+	if len(manifestData.Documents) != 1 || manifestData.Documents[0].Path != "docs/en/overview.md" {
+		t.Fatalf("buildDiagnosticManifest() documents = %#v", manifestData.Documents)
+	}
+	if len(manifestData.Skipped) != 1 || manifestData.Skipped[0].Reason != nonMarkdownReason {
+		t.Fatalf("buildDiagnosticManifest() skipped = %#v", manifestData.Skipped)
 	}
 }
 
@@ -678,6 +851,58 @@ func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
 	}
 }
 
+func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	sourcePath := sourcePathForLayout(layoutRoot)
+	fullPath := filepath.Join(snapshotRoot, sourcePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(fullPath, []byte("stale llms body\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	var requests atomic.Int32
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch requests.Add(1) {
+		case 1:
+			return testResponse(http.StatusNotModified, map[string]string{"ETag": `"etag-2"`}, ""), nil
+		default:
+			return testResponse(http.StatusOK, map[string]string{
+				"Content-Type": "text/plain; charset=utf-8",
+				"ETag":         `"etag-3"`,
+			}, "https://docs.example.com/docs/en/overview.md\n"), nil
+		}
+	})
+
+	result, err := fetchDocument(
+		context.Background(),
+		client,
+		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+		t.TempDir(),
+		snapshotRoot,
+		"https://docs.example.com/llms.txt",
+		sourcePath,
+		manifestEntry{
+			Path:           sourcePath,
+			SHA256:         hashBytes([]byte("expected llms body\n")),
+			Bytes:          int64(len("expected llms body\n")),
+			LastModifiedAt: "2026-03-13T06:36:52Z",
+			ETag:           `"etag-1"`,
+		},
+	)
+	if err != nil {
+		t.Fatalf("fetchDocument() error = %v", err)
+	}
+
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2", got)
+	}
+	if got := readFile(t, result.LocalPath); got != "https://docs.example.com/docs/en/overview.md\n" {
+		t.Fatalf("fetchDocument() refetched body = %q", got)
+	}
+}
+
 func TestPreservePreviousDocumentUsesExistingSnapshotCopy(t *testing.T) {
 	tempDir := t.TempDir()
 	body := []byte("# Cached markdown\n")
@@ -837,6 +1062,86 @@ func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 	}
 }
 
+func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
+	withoutRetrySleep(t)
+
+	snapshotRoot := t.TempDir()
+	cachedBody := []byte("# Previous snapshot\n")
+	targetPath := filepath.Join(snapshotRoot, "docs", "en", "skills.md")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(targetPath, cachedBody, 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	failingClient := newTestClient(func(req *http.Request) (*http.Response, error) {
+		return testResponse(http.StatusOK, map[string]string{
+			"Content-Type": "text/html; charset=utf-8",
+		}, "<!DOCTYPE html><html><body>persistent failure</body></html>"), nil
+	})
+	successClient := newTestClient(func(req *http.Request) (*http.Response, error) {
+		return testResponse(http.StatusOK, map[string]string{
+			"Content-Type": "text/markdown; charset=utf-8",
+		}, "# Fresh snapshot\n"), nil
+	})
+
+	previous := map[string]manifestEntry{
+		"https://docs.example.com/docs/en/skills.md": {
+			URL:            "https://docs.example.com/docs/en/skills.md",
+			Path:           "docs/en/skills.md",
+			SHA256:         hashBytes(cachedBody),
+			Bytes:          int64(len(cachedBody)),
+			LastModifiedAt: "2026-03-13T12:00:00Z",
+			ETag:           "\"etag-1\"",
+		},
+	}
+
+	firstDocs, firstFailures := fetchDocuments(
+		context.Background(),
+		failingClient,
+		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+		layoutRoot,
+		filepath.Join(t.TempDir(), "diagnostics-one"),
+		t.TempDir(),
+		snapshotRoot,
+		[]string{"https://docs.example.com/docs/en/skills.md"},
+		1,
+		previous,
+	)
+	if len(firstDocs) != 1 || firstDocs[0].LocalPath != targetPath {
+		t.Fatalf("first fetchDocuments() docs = %#v", firstDocs)
+	}
+	if len(firstFailures) != 1 || !firstFailures[0].PreservedExisting {
+		t.Fatalf("first fetchDocuments() failures = %#v", firstFailures)
+	}
+
+	secondDocs, secondFailures := fetchDocuments(
+		context.Background(),
+		successClient,
+		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+		layoutRoot,
+		filepath.Join(t.TempDir(), "diagnostics-two"),
+		t.TempDir(),
+		snapshotRoot,
+		[]string{"https://docs.example.com/docs/en/skills.md"},
+		1,
+		previous,
+	)
+	if len(secondFailures) != 0 {
+		t.Fatalf("second fetchDocuments() failures = %#v, want none", secondFailures)
+	}
+	if len(secondDocs) != 1 {
+		t.Fatalf("second fetchDocuments() docs len = %d, want 1", len(secondDocs))
+	}
+	if secondDocs[0].LocalPath == targetPath {
+		t.Fatalf("second fetchDocuments() reused preserved file, want new fetched file")
+	}
+	if got := readFile(t, secondDocs[0].LocalPath); got != "# Fresh snapshot\n" {
+		t.Fatalf("second fetchDocuments() body = %q, want fresh content", got)
+	}
+}
+
 func TestReplaceDirRecoversFromLeftoverBackup(t *testing.T) {
 	root := t.TempDir()
 	outputDir := filepath.Join(root, "snapshot")
@@ -865,5 +1170,198 @@ func TestReplaceDirRecoversFromLeftoverBackup(t *testing.T) {
 	}
 	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
 		t.Fatalf("backup directory still exists: %v", err)
+	}
+}
+
+func TestReconcileStageStateRestoresBackupFromJournal(t *testing.T) {
+	root := t.TempDir()
+	outputDir := filepath.Join(root, "snapshot")
+	backupDir := outputDir + ".bak"
+	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+
+	if err := os.MkdirAll(backupDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(backup) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "old.md"), []byte("old\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(backup) error = %v", err)
+	}
+	if err := os.MkdirAll(tempDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(temp) error = %v", err)
+	}
+	if err := writeStageCompletionMarker(tempDir); err != nil {
+		t.Fatalf("writeStageCompletionMarker() error = %v", err)
+	}
+	if err := writeStageJournal(outputDir, stageJournal{
+		TempDir:   tempDir,
+		OutputDir: outputDir,
+		BackupDir: backupDir,
+		Phase:     "backup_created",
+	}); err != nil {
+		t.Fatalf("writeStageJournal() error = %v", err)
+	}
+
+	if err := reconcileStageState(outputDir); err != nil {
+		t.Fatalf("reconcileStageState() error = %v", err)
+	}
+
+	if got := readFile(t, filepath.Join(outputDir, "old.md")); got != "old\n" {
+		t.Fatalf("reconcileStageState() output = %q, want restored backup", got)
+	}
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("staged temp directory still exists: %v", err)
+	}
+	if _, err := os.Stat(stageJournalPath(outputDir)); !os.IsNotExist(err) {
+		t.Fatalf("stage journal still exists: %v", err)
+	}
+}
+
+func TestReconcileStageStatePromotesCompletedTempFromJournal(t *testing.T) {
+	root := t.TempDir()
+	outputDir := filepath.Join(root, "snapshot")
+	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+
+	if err := os.MkdirAll(tempDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(temp) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "new.md"), []byte("new\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(temp) error = %v", err)
+	}
+	if err := writeStageCompletionMarker(tempDir); err != nil {
+		t.Fatalf("writeStageCompletionMarker() error = %v", err)
+	}
+	if err := writeStageJournal(outputDir, stageJournal{
+		TempDir:   tempDir,
+		OutputDir: outputDir,
+		BackupDir: outputDir + ".bak",
+		Phase:     "staged",
+	}); err != nil {
+		t.Fatalf("writeStageJournal() error = %v", err)
+	}
+
+	if err := reconcileStageState(outputDir); err != nil {
+		t.Fatalf("reconcileStageState() error = %v", err)
+	}
+
+	if got := readFile(t, filepath.Join(outputDir, "new.md")); got != "new\n" {
+		t.Fatalf("reconcileStageState() output = %q, want promoted staged content", got)
+	}
+	if _, err := os.Stat(stageCompletionMarkerPath(outputDir)); !os.IsNotExist(err) {
+		t.Fatalf("completion marker still exists in output: %v", err)
+	}
+	if _, err := os.Stat(stageJournalPath(outputDir)); !os.IsNotExist(err) {
+		t.Fatalf("stage journal still exists: %v", err)
+	}
+}
+
+func TestReconcileStageStateRemovesStaleArtifactsWhenOutputExists(t *testing.T) {
+	root := t.TempDir()
+	outputDir := filepath.Join(root, "snapshot")
+	backupDir := outputDir + ".bak"
+	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(output) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "live.md"), []byte("live\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(output) error = %v", err)
+	}
+	if err := os.MkdirAll(backupDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(backup) error = %v", err)
+	}
+	if err := os.MkdirAll(tempDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(temp) error = %v", err)
+	}
+	if err := writeStageJournal(outputDir, stageJournal{
+		TempDir:   tempDir,
+		OutputDir: outputDir,
+		BackupDir: backupDir,
+		Phase:     "activate_output",
+	}); err != nil {
+		t.Fatalf("writeStageJournal() error = %v", err)
+	}
+
+	if err := reconcileStageState(outputDir); err != nil {
+		t.Fatalf("reconcileStageState() error = %v", err)
+	}
+
+	if got := readFile(t, filepath.Join(outputDir, "live.md")); got != "live\n" {
+		t.Fatalf("reconcileStageState() output = %q, want live output preserved", got)
+	}
+	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
+		t.Fatalf("backup directory still exists: %v", err)
+	}
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("staged temp directory still exists: %v", err)
+	}
+}
+
+func TestReconcileStageStateRemovesIncompleteTempFromJournal(t *testing.T) {
+	root := t.TempDir()
+	outputDir := filepath.Join(root, "snapshot")
+	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+
+	if err := os.MkdirAll(tempDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(temp) error = %v", err)
+	}
+	if err := writeStageJournal(outputDir, stageJournal{
+		TempDir:   tempDir,
+		OutputDir: outputDir,
+		BackupDir: outputDir + ".bak",
+		Phase:     "staged",
+	}); err != nil {
+		t.Fatalf("writeStageJournal() error = %v", err)
+	}
+
+	if err := reconcileStageState(outputDir); err != nil {
+		t.Fatalf("reconcileStageState() error = %v", err)
+	}
+
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("incomplete staged temp directory still exists: %v", err)
+	}
+}
+
+func TestReplaceDirWarnsWhenBackupCleanupFails(t *testing.T) {
+	root := t.TempDir()
+	outputDir := filepath.Join(root, "snapshot")
+	backupDir := outputDir + ".bak"
+	tempDir := filepath.Join(root, "temp")
+
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(output) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "old.md"), []byte("old\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(output) error = %v", err)
+	}
+	if err := os.MkdirAll(tempDir, 0o750); err != nil {
+		t.Fatalf("os.MkdirAll(temp) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "new.md"), []byte("new\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(temp) error = %v", err)
+	}
+	if err := writeStageCompletionMarker(tempDir); err != nil {
+		t.Fatalf("writeStageCompletionMarker() error = %v", err)
+	}
+
+	previousRemoveAll := removeAllPath
+	removeAllPath = func(path string) error {
+		if path == backupDir {
+			return fmt.Errorf("simulated cleanup failure")
+		}
+		return os.RemoveAll(path)
+	}
+	defer func() {
+		removeAllPath = previousRemoveAll
+	}()
+
+	if err := replaceDir(tempDir, outputDir); err != nil {
+		t.Fatalf("replaceDir() error = %v", err)
+	}
+
+	if got := readFile(t, filepath.Join(outputDir, "new.md")); got != "new\n" {
+		t.Fatalf("replaceDir() output = %q, want new content", got)
+	}
+	if _, err := os.Stat(backupDir); err != nil {
+		t.Fatalf("backup directory missing after simulated cleanup failure: %v", err)
 	}
 }

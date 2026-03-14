@@ -1,0 +1,115 @@
+package manifest
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+type Manifest struct {
+	SourceURL            string         `json:"source_url"`
+	SourcePath           string         `json:"source_path"`
+	SourceSHA256         string         `json:"source_sha256,omitempty"`
+	SourceLastModifiedAt string         `json:"source_last_modified_at,omitempty"`
+	SourceETag           string         `json:"source_etag,omitempty"`
+	DocumentCount        int            `json:"document_count"`
+	SkippedCount         int            `json:"skipped_count,omitempty"`
+	Documents            []Entry        `json:"documents,omitempty"`
+	Skipped              []SkippedEntry `json:"skipped,omitempty"`
+	Failures             []FetchFailure `json:"failures,omitempty"`
+}
+
+type Entry struct {
+	URL            string `json:"url"`
+	Path           string `json:"path"`
+	SHA256         string `json:"sha256"`
+	Bytes          int64  `json:"bytes"`
+	LastModifiedAt string `json:"last_modified_at,omitempty"`
+	ETag           string `json:"etag,omitempty"`
+}
+
+type SkippedEntry struct {
+	URL    string `json:"url"`
+	Reason string `json:"reason"`
+}
+
+type FetchFailure struct {
+	URL               string `json:"url"`
+	Error             string `json:"error"`
+	DiagnosticPath    string `json:"diagnostic_path,omitempty"`
+	PreservedExisting bool   `json:"preserved_existing,omitempty"`
+}
+
+func Load(manifestPath string) (*Manifest, error) {
+	if manifestPath == "" {
+		return nil, nil
+	}
+
+	// #nosec G304 -- manifestPath is a local CLI input to a release asset on disk.
+	body, err := os.ReadFile(manifestPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+
+	var manifestData Manifest
+	if err := json.Unmarshal(body, &manifestData); err != nil {
+		return nil, fmt.Errorf("parse manifest: %w", err)
+	}
+
+	return &manifestData, nil
+}
+
+func Write(manifestPath string, manifestData Manifest) error {
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+		return fmt.Errorf("create manifest directory: %w", err)
+	}
+
+	manifestBytes, err := json.MarshalIndent(manifestData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	manifestBytes = append(manifestBytes, '\n')
+
+	if err := os.WriteFile(manifestPath, manifestBytes, 0o600); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+
+	return nil
+}
+
+func PreviousDocumentsByURL(manifestData *Manifest) map[string]Entry {
+	if manifestData == nil {
+		return nil
+	}
+
+	documents := make(map[string]Entry, len(manifestData.Documents))
+	for _, document := range manifestData.Documents {
+		documents[document.URL] = document
+	}
+
+	return documents
+}
+
+func PreviousSourceEntry(manifestData *Manifest, fallbackPath string) Entry {
+	if manifestData == nil {
+		return Entry{Path: fallbackPath}
+	}
+
+	sourcePath := manifestData.SourcePath
+	if sourcePath == "" {
+		sourcePath = fallbackPath
+	}
+
+	return Entry{
+		URL:            manifestData.SourceURL,
+		Path:           sourcePath,
+		SHA256:         manifestData.SourceSHA256,
+		LastModifiedAt: manifestData.SourceLastModifiedAt,
+		ETag:           manifestData.SourceETag,
+	}
+}

@@ -1,0 +1,11 @@
+{
+  "commit_title": "sync: tidy overview wording in the intro note",
+  "commit_body": "- Clean up wording in the overview intro note.\n- Remove an outdated disclaimer.\n- Keep the landing guidance focused on current docs.",
+  "release_title": "Overview Intro Tidy Up",
+  "release_notes_markdown": "## Summary\nThis snapshot tidies the overview intro.\n\n## Updated Docs\n- `docs/en/overview.md`: removed an outdated disclaimer.\n",
+  "key_changes": [
+    "Cleaned up the overview intro note",
+    "Removed an outdated disclaimer",
+    "Kept the landing guidance focused on current docs"
+  ]
+}

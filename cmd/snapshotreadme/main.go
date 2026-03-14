@@ -48,9 +48,11 @@ type templateData struct {
 	Releases      []releaseView
 }
 
+var runSnapshotReadme = run
+
 func main() {
 	cfg := parseFlags()
-	if err := run(cfg); err != nil {
+	if err := runSnapshotReadme(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

@@ -32,6 +32,9 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      - name: Run helper script tests
+        run: python3 -m unittest discover -s .github/scripts/tests -p 'test_*.py'
+
       - name: Install golangci-lint
         run: |
           mkdir -p "$RUNNER_TEMP/bin"

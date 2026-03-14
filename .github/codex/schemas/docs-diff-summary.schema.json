@@ -18,7 +18,8 @@
     },
     "commit_body": {
       "type": "string",
-      "minLength": 1
+      "minLength": 6,
+      "pattern": "^- .+(?:\\\\n- .+){1,3}$"
     },
     "release_title": {
       "type": "string",

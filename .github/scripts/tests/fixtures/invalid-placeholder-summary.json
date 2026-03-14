@@ -1,0 +1,11 @@
+{
+  "commit_title": "sync: inspect snapshot diff inputs",
+  "commit_body": "- Draft release output.\n- Review the patch later.\n- Inspect the diff again.",
+  "release_title": "Snapshot Diff Analysis In Progress",
+  "release_notes_markdown": "## Summary\nAnalysis in progress.\n\n## Added Docs\nTBD.\n\n## Updated Docs\nTBD.\n",
+  "key_changes": [
+    "Inspect the patch",
+    "Review the diff",
+    "Draft the release"
+  ]
+}

@@ -6,6 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 schema_file="$repo_root/.github/codex/schemas/docs-diff-summary.schema.json"
 prompt_file="$repo_root/.github/codex/prompts/docs-diff-summary.md"
+validator_script="$repo_root/.github/scripts/validate_codex_release.py"
 model="gpt-5.4"
 artifact_dir=""
 output_file=""
@@ -58,9 +59,7 @@ fi
 
 for required_file in \
   "$artifact_dir/snapshot-status.txt" \
-  "$artifact_dir/snapshot-diffstat.txt" \
-  "$artifact_dir/snapshot.patch" \
-  "$artifact_dir/snapshot/manifest.json"; do
+  "$artifact_dir/snapshot-diffstat.txt"; do
   if [ ! -f "$required_file" ]; then
     echo "missing required file: $required_file" >&2
     exit 1
@@ -68,11 +67,49 @@ for required_file in \
 done
 
 isolated_workdir="$(mktemp -d "${TMPDIR:-/tmp}/claudecodedocs-codex-XXXXXX")"
-mkdir -p "$isolated_workdir/snapshot"
+mkdir -p "$isolated_workdir"
 cp "$artifact_dir/snapshot-status.txt" "$isolated_workdir/"
 cp "$artifact_dir/snapshot-diffstat.txt" "$isolated_workdir/"
-cp "$artifact_dir/snapshot.patch" "$isolated_workdir/"
-cp "$artifact_dir/snapshot/manifest.json" "$isolated_workdir/snapshot/manifest.json"
+if [ -f "$artifact_dir/snapshot-sanitized.patch" ]; then
+  cp "$artifact_dir/snapshot-sanitized.patch" "$isolated_workdir/"
+else
+  perl -0777 -pe 's/<!--.*?-->//gs' "$artifact_dir/snapshot.patch" > "$isolated_workdir/snapshot-sanitized.patch"
+fi
+
+if [ -f "$artifact_dir/snapshot-context.json" ]; then
+  cp "$artifact_dir/snapshot-context.json" "$isolated_workdir/"
+else
+  if [ ! -f "$artifact_dir/snapshot/manifest.json" ]; then
+    echo "missing required file: $artifact_dir/snapshot-context.json (or fallback $artifact_dir/snapshot/manifest.json)" >&2
+    exit 1
+  fi
+
+  document_count="$(jq -r '.document_count // 0' "$artifact_dir/snapshot/manifest.json")"
+  skipped_count="$(jq -r '.skipped_count // 0' "$artifact_dir/snapshot/manifest.json")"
+  failure_count="$(jq -r '.failures | length' "$artifact_dir/snapshot/manifest.json")"
+  published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  jq -n \
+    --arg repository "local/codex-dry-run" \
+    --arg site_name "Documentation Archive" \
+    --arg site_url "" \
+    --arg source_url "" \
+    --arg release_tag "local-dry-run" \
+    --arg published_at "$published_at" \
+    --argjson document_count "$document_count" \
+    --argjson skipped_count "$skipped_count" \
+    --argjson failure_count "$failure_count" \
+    '{
+      repository: $repository,
+      site_name: $site_name,
+      site_url: $site_url,
+      source_url: $source_url,
+      release_tag: $release_tag,
+      published_at: $published_at,
+      document_count: $document_count,
+      skipped_count: $skipped_count,
+      failure_count: $failure_count
+    }' > "$isolated_workdir/snapshot-context.json"
+fi
 
 cleanup() {
   if [ "$keep_workdir" != "true" ] && [ -d "$isolated_workdir" ]; then
@@ -100,66 +137,7 @@ if [ -n "$reasoning_effort" ]; then
 fi
 
 validate_output() {
-  python3 - "$output_file" <<'PY'
-import json
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-errors = []
-
-try:
-    obj = json.loads(path.read_text())
-except Exception as exc:
-    print(f"invalid JSON: {exc}")
-    sys.exit(1)
-
-title = obj.get("commit_title", "")
-release_title = obj.get("release_title", "")
-notes = obj.get("release_notes_markdown", "")
-key_changes = obj.get("key_changes", [])
-
-if not re.match(r"^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,62}[A-Za-z0-9`)]$", title):
-    errors.append("commit_title does not match the required semantic-title format")
-
-suffix = title.removeprefix("sync: ").strip().lower()
-forbidden_suffixes = {
-    "+", "/", ":", "-", "and", "or", "to", "into", "with", "for",
-    "new", "focused", "dedicated",
-}
-if suffix in forbidden_suffixes or suffix.endswith(" +"):
-    errors.append("commit_title ends with a dangling or invalid suffix")
-if suffix.split() and suffix.split()[-1] in forbidden_suffixes:
-    errors.append("commit_title ends with a dangling final word")
-if re.search(r"\b(?:into|for|with|to|in)(?:a|an|the)$", suffix):
-    errors.append("commit_title ends with a merged dangling preposition/article")
-
-placeholder_phrases = (
-    "in progress",
-    "analysis in progress",
-    "inspect snapshot diff inputs",
-    "snapshot diff analysis",
-)
-if any(phrase in release_title.lower() for phrase in placeholder_phrases):
-    errors.append("release_title is still a placeholder")
-if any(phrase in notes.lower() for phrase in placeholder_phrases):
-    errors.append("release_notes_markdown is still a placeholder")
-
-required_sections = ("## Summary", "## Added Docs", "## Updated Docs")
-for section in required_sections:
-    if section not in notes:
-        errors.append(f"release_notes_markdown is missing {section}")
-
-if len(key_changes) < 3:
-    errors.append("key_changes must include at least 3 items")
-if key_changes and all(change.lower().startswith(("inspect", "review", "draft")) for change in key_changes):
-    errors.append("key_changes are placeholder tasks, not actual documentation changes")
-
-if errors:
-    print("\n".join(errors))
-    sys.exit(1)
-PY
+  python3 "$validator_script" "$output_file"
 }
 
 run_codex() {
@@ -192,13 +170,11 @@ while [ "$attempt" -le "$max_attempts" ]; do
 
   {
     cat "$prompt_file"
-    printf '\n\nThe previous JSON output was rejected for these reasons:\n'
-    while IFS= read -r line; do
-      printf -- '- %s\n' "$line"
-    done <<< "$validation_errors"
     cat <<'EOF'
 
-Return corrected JSON only.
+The previous JSON output did not satisfy the required schema or validation rules.
+Re-read the four provided input files and return corrected JSON only.
+Do not mention any rejection, validation, or prior output.
 Do not mention the rejection.
 Do not add commentary outside the schema fields.
 EOF

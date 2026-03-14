@@ -1,0 +1,11 @@
+{
+  "commit_title": "sync: remove temporary validation note from overview intro",
+  "commit_body": "- Remove a temporary validation note from the overview intro.\n- Keep the documentation index callout focused on the source docs.\n- No new documentation pages were added in this snapshot.",
+  "release_title": "Overview Page Header Cleanup",
+  "release_notes_markdown": "## Summary\nThis snapshot removes a temporary validation note from the overview page intro.\n\n## Added Docs\nNo new pages were added in this snapshot.\n\n## Updated Docs\n- `docs/en/overview.md`: removed the temporary validation note from the top callout.\n\n## Notable Impact\nReaders now see a cleaner overview page intro.",
+  "key_changes": [
+    "Removed the temporary validation note from the overview intro",
+    "Kept the documentation index callout focused on the source docs",
+    "No new documentation pages were added in this snapshot"
+  ]
+}

@@ -1,0 +1,200 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"time"
+
+	apppkg "claudecodedocs/internal/app"
+	fetchpkg "claudecodedocs/internal/fetch"
+	linkspkg "claudecodedocs/internal/links"
+	manifestpkg "claudecodedocs/internal/manifest"
+	policypkg "claudecodedocs/internal/policy"
+	stagepkg "claudecodedocs/internal/stage"
+)
+
+const (
+	layoutRoot        = linkspkg.LayoutRoot
+	layoutNested      = linkspkg.LayoutNested
+	nonMarkdownReason = linkspkg.NonMarkdownReason
+	htmlSniffBytes    = fetchpkg.HTMLSniffBytes
+	progressLogEvery  = fetchpkg.ProgressLogEvery
+)
+
+type config = apppkg.Config
+type urlPolicy = policypkg.URLPolicy
+type fetchResult = fetchpkg.Result
+type fetchFailure = manifestpkg.FetchFailure
+type manifest = manifestpkg.Manifest
+type manifestEntry = manifestpkg.Entry
+type skippedEntry = manifestpkg.SkippedEntry
+type stageJournal = stagepkg.Journal
+
+type unexpectedContentError struct {
+	message     string
+	status      string
+	contentType string
+	headers     map[string][]string
+	sniff       []byte
+	bodyPath    string
+}
+
+func (e *unexpectedContentError) Error() string {
+	return e.message
+}
+
+var (
+	retrySleepWithJitter = fetchpkg.RetrySleepWithJitter
+	removeAllPath        = stagepkg.RemoveAllPath
+)
+
+func syncTestHooks() {
+	fetchpkg.RetrySleepWithJitter = retrySleepWithJitter
+	stagepkg.RemoveAllPath = removeAllPath
+}
+
+func toCompatUnexpected(err error) error {
+	var unexpected *fetchpkg.UnexpectedContentError
+	if !errors.As(err, &unexpected) {
+		return err
+	}
+
+	return &unexpectedContentError{
+		message:     unexpected.Message,
+		status:      unexpected.Status,
+		contentType: unexpected.ContentType,
+		headers:     unexpected.Headers,
+		sniff:       append([]byte(nil), unexpected.Sniff...),
+		bodyPath:    unexpected.BodyPath,
+	}
+}
+
+func toFetchUnexpected(err error) error {
+	var unexpected *unexpectedContentError
+	if !errors.As(err, &unexpected) {
+		return err
+	}
+
+	return &fetchpkg.UnexpectedContentError{
+		Message:     unexpected.message,
+		Status:      unexpected.status,
+		ContentType: unexpected.contentType,
+		Headers:     unexpected.headers,
+		Sniff:       append([]byte(nil), unexpected.sniff...),
+		BodyPath:    unexpected.bodyPath,
+	}
+}
+
+func extractLinks(body []byte) ([]string, error) {
+	return linkspkg.ExtractLinks(body)
+}
+
+func partitionDocumentURLs(links []string) ([]string, []skippedEntry, error) {
+	return linkspkg.PartitionDocumentURLs(links)
+}
+
+func isMarkdownURL(rawURL string) (bool, error) {
+	return linkspkg.IsMarkdownURL(rawURL)
+}
+
+func newURLPolicy(sourceURL string, allowedHostsCSV string) (*urlPolicy, error) {
+	return policypkg.NewURLPolicy(sourceURL, allowedHostsCSV)
+}
+
+func validateResolvedIP(ip net.IP) error {
+	return policypkg.ValidateResolvedIP(ip)
+}
+
+func newHTTPClient(timeout time.Duration, urlPolicy *urlPolicy) *http.Client {
+	return policypkg.NewHTTPClient(timeout, urlPolicy)
+}
+
+func relativePathForURL(rawURL string, layout string) (string, error) {
+	return linkspkg.RelativePathForURL(rawURL, layout)
+}
+
+func sourcePathForLayout(layout string) string {
+	return linkspkg.SourcePathForLayout(layout)
+}
+
+func writeManifest(manifestPath string, manifestData manifest) error {
+	return manifestpkg.Write(manifestPath, manifestData)
+}
+
+func loadManifest(manifestPath string) (*manifest, error) {
+	return manifestpkg.Load(manifestPath)
+}
+
+func normalizeLastModified(value string) string {
+	return fetchpkg.NormalizeLastModified(value)
+}
+
+func ifModifiedSinceHeader(lastModifiedAt string) string {
+	return fetchpkg.IfModifiedSinceHeader(lastModifiedAt)
+}
+
+func normalizeETag(value string) string {
+	return fetchpkg.NormalizeETag(value)
+}
+
+func ensureMarkdownResponse(status string, contentType string, headers map[string][]string, sniff []byte, bodyPath string) error {
+	return toCompatUnexpected(fetchpkg.EnsureMarkdownResponse(status, contentType, headers, sniff, bodyPath))
+}
+
+func writeUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, relativePath string, unexpected *unexpectedContentError) (string, error) {
+	return fetchpkg.WriteUnexpectedContentDiagnostic(diagnosticsDir, rawURL, relativePath, toFetchUnexpected(unexpected).(*fetchpkg.UnexpectedContentError))
+}
+
+func buildDiagnosticManifest(sourceURL string, sourcePath string, source *fetchResult, documents []fetchResult, skipped []skippedEntry, failures []fetchFailure) manifest {
+	return apppkg.BuildDiagnosticManifest(sourceURL, sourcePath, source, documents, skipped, failures)
+}
+
+func fetchDocument(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, spoolDir string, snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
+	syncTestHooks()
+	return fetchpkg.FetchDocument(ctx, client, urlPolicy, spoolDir, snapshotRoot, rawURL, relativePath, previous)
+}
+
+func preservePreviousDocument(snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
+	return fetchpkg.PreservePreviousDocument(snapshotRoot, rawURL, relativePath, previous)
+}
+
+func hashBytes(body []byte) string {
+	return fetchpkg.HashBytes(body)
+}
+
+func safeJoin(root string, relativePath string) (string, error) {
+	return fetchpkg.SafeJoin(root, relativePath)
+}
+
+func fetchDocuments(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, layout string, diagnosticsDir string, spoolDir string, snapshotRoot string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
+	syncTestHooks()
+	return fetchpkg.FetchDocuments(ctx, client, urlPolicy, layout, diagnosticsDir, spoolDir, snapshotRoot, docURLs, concurrency, previousDocuments)
+}
+
+func replaceDir(tempDir string, outputDir string) error {
+	syncTestHooks()
+	return stagepkg.ReplaceDir(tempDir, outputDir)
+}
+
+func reconcileStageState(outputDir string) error {
+	syncTestHooks()
+	return stagepkg.ReconcileState(outputDir)
+}
+
+func writeStageCompletionMarker(root string) error {
+	return stagepkg.WriteCompletionMarker(root)
+}
+
+func writeStageJournal(outputDir string, journal stageJournal) error {
+	return stagepkg.WriteJournal(outputDir, journal)
+}
+
+func stageJournalPath(outputDir string) string {
+	return stagepkg.JournalPath(outputDir)
+}
+
+func stageCompletionMarkerPath(root string) string {
+	return stagepkg.CompletionMarkerPath(root)
+}

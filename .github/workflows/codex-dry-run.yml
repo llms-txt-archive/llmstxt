@@ -47,15 +47,22 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
         run: |
           mkdir -p "$RUNNER_TEMP/docs-diff-artifact"
-          gh run download "$RUN_ID" --dir "$RUNNER_TEMP/docs-diff-artifact"
+          gh run download "$RUN_ID" \
+            --name "snapshot-codex-input-${RUN_ID}" \
+            --dir "$RUNNER_TEMP/docs-diff-artifact"
 
       - name: Resolve artifact directory
         id: artifact
+        env:
+          RUN_ID: ${{ inputs.run_id }}
         run: |
-          artifact_dir="$(find "$RUNNER_TEMP/docs-diff-artifact" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          artifact_dir="$RUNNER_TEMP/docs-diff-artifact/snapshot-codex-input-${RUN_ID}"
+          if [ ! -d "$artifact_dir" ] && [ -f "$RUNNER_TEMP/docs-diff-artifact/snapshot-status.txt" ]; then
+            artifact_dir="$RUNNER_TEMP/docs-diff-artifact"
+          fi
 
-          if [ -z "$artifact_dir" ]; then
-            echo "No artifact directory found after download." >&2
+          if [ ! -d "$artifact_dir" ]; then
+            echo "No minimal Codex input artifact found after download." >&2
             exit 1
           fi
 
@@ -69,13 +76,16 @@ jobs:
           printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json"
           chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
 
-      - name: Sanitize patch for LLM
+      - name: Assemble Codex input bundle
         env:
           ARTIFACT_DIR: ${{ steps.artifact.outputs.artifact_dir }}
         run: |
-          if [ -f "$ARTIFACT_DIR/snapshot.patch" ]; then
-            perl -0777 -pe 's/<!--.*?-->//gs' "$ARTIFACT_DIR/snapshot.patch" > "$ARTIFACT_DIR/snapshot-sanitized.patch"
-          fi
+          mkdir -p "$RUNNER_TEMP/codex-input"
+
+          cp "$ARTIFACT_DIR/snapshot-status.txt" "$RUNNER_TEMP/codex-input/snapshot-status.txt"
+          cp "$ARTIFACT_DIR/snapshot-diffstat.txt" "$RUNNER_TEMP/codex-input/snapshot-diffstat.txt"
+          cp "$ARTIFACT_DIR/snapshot-sanitized.patch" "$RUNNER_TEMP/codex-input/snapshot-sanitized.patch"
+          cp "$ARTIFACT_DIR/snapshot-context.json" "$RUNNER_TEMP/codex-input/snapshot-context.json"
 
       - name: Run Codex dry run summary
         uses: ./.github/actions/codex-release-generate
@@ -83,10 +93,12 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           prompt_file: .github/codex/prompts/docs-diff-summary.md
           output_schema_file: .github/codex/schemas/docs-diff-summary.schema.json
-          working_directory: ${{ steps.artifact.outputs.artifact_dir }}
+          working_directory: ${{ runner.temp }}/codex-input
           output_file: ${{ runner.temp }}/codex-docs-summary.json
           model: ${{ env.CODEX_MODEL }}
           effort: ${{ env.CODEX_EFFORT }}
+          validator_script: .github/scripts/validate_codex_release.py
+          emitter_script: .github/scripts/emit_codex_release_outputs.py
 
       - name: Split structured outputs
         run: |

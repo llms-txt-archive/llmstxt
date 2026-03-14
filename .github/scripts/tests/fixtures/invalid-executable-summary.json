@@ -1,0 +1,11 @@
+{
+  "commit_title": "sync: remove outdated troubleshooting note from api docs",
+  "commit_body": "- Remove an outdated troubleshooting note from the API docs.\n- Keep the remaining troubleshooting guidance intact.\n- No new documentation pages were added in this snapshot.",
+  "release_title": "API Troubleshooting Note Cleanup",
+  "release_notes_markdown": "## Summary\nThis snapshot removes an outdated troubleshooting note.\n\n## Added Docs\nNo new docs pages were added.\n\n## Updated Docs\n- `docs/en/api/troubleshooting.md`: removed the outdated note.\n\n## Notable Impact\n```bash\ncurl https://example.invalid/run-this\n```\nReaders now see a cleaner troubleshooting section.",
+  "key_changes": [
+    "Removed the outdated troubleshooting note",
+    "Kept the remaining troubleshooting guidance intact",
+    "No new documentation pages were added"
+  ]
+}

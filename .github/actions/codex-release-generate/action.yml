@@ -23,86 +23,20 @@ runs:
       shell: bash
       env:
         SUMMARY_JSON: ${{ inputs.output_file }}
+        VALIDATOR_SCRIPT: ${{ inputs.validator_script }}
       run: |
         set -euo pipefail
-        python3 - "$SUMMARY_JSON" <<'PY'
-        import json
-        import re
-        import sys
-        from pathlib import Path
-
-        path = Path(sys.argv[1])
-        errors = []
-
-        try:
-            obj = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:  # pragma: no cover - runtime guard
-            print(f"invalid JSON: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-        title = obj.get("commit_title", "")
-        release_title = obj.get("release_title", "")
-        notes = obj.get("release_notes_markdown", "")
-        key_changes = obj.get("key_changes", [])
-
-        if not re.match(r"^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,62}[A-Za-z0-9`)]$", title):
-            errors.append("commit_title must match the required 'sync: <finished phrase>' format")
-
-        suffix = title.removeprefix("sync: ").strip().lower()
-        forbidden_suffixes = {
-            "+", "/", ":", "-", "and", "or", "to", "into", "with", "for",
-            "new", "focused", "dedicated",
-        }
-        if suffix in forbidden_suffixes or suffix.endswith(" +"):
-            errors.append("commit_title ends with a dangling or invalid suffix")
-        if suffix.split() and suffix.split()[-1] in forbidden_suffixes:
-            errors.append("commit_title ends with a dangling final word")
-
-        placeholder_phrases = (
-            "in progress",
-            "analysis in progress",
-            "inspect snapshot diff inputs",
-            "snapshot diff analysis",
-        )
-        if any(phrase in release_title.lower() for phrase in placeholder_phrases):
-            errors.append("release_title contains placeholder text")
-        if any(phrase in notes.lower() for phrase in placeholder_phrases):
-            errors.append("release_notes_markdown contains placeholder text")
-
-        for section in ("## Summary", "## Added Docs", "## Updated Docs"):
-            if section not in notes:
-                errors.append(f"release_notes_markdown missing section: {section}")
-
-        if len(key_changes) < 3:
-            errors.append("key_changes must include at least 3 items")
-        if key_changes and all(str(change).lower().startswith(("inspect", "review", "draft")) for change in key_changes):
-            errors.append("key_changes contains placeholder task text")
-
-        if errors:
-            print("\n".join(errors), file=sys.stderr)
-            sys.exit(1)
-        PY
+        python3 "$VALIDATOR_SCRIPT" "$SUMMARY_JSON"
     - id: split
       name: Split outputs
       shell: bash
       env:
         SUMMARY_JSON: ${{ inputs.output_file }}
+        EMITTER_SCRIPT: ${{ inputs.emitter_script }}
       run: |
         set -euo pipefail
         outdir="${RUNNER_TEMP:-$PWD}"
-        jq -r '.commit_title' "$SUMMARY_JSON" > "$outdir/codex-commit-title.txt"
-        jq -r '.commit_body' "$SUMMARY_JSON" > "$outdir/codex-commit-body.txt"
-        jq -r '.release_title' "$SUMMARY_JSON" > "$outdir/codex-release-title.txt"
-        jq -r '.release_notes_markdown' "$SUMMARY_JSON" > "$outdir/codex-release-notes.md"
-        jq -r '.key_changes[]' "$SUMMARY_JSON" > "$outdir/codex-key-changes.txt"
-        {
-          echo "commit_title=$(cat "$outdir/codex-commit-title.txt")"
-          echo "commit_body<<__CODEX_COMMIT_BODY__"
-          cat "$outdir/codex-commit-body.txt"
-          echo "__CODEX_COMMIT_BODY__"
-          echo "release_title=$(cat "$outdir/codex-release-title.txt")"
-          echo "release_notes_file=$outdir/codex-release-notes.md"
-        } >> "$GITHUB_OUTPUT"
+        python3 "$EMITTER_SCRIPT" "$SUMMARY_JSON" "$outdir" "$GITHUB_OUTPUT"
 
 inputs:
   openai_api_key:
@@ -125,6 +59,12 @@ inputs:
     required: true
   effort:
     description: "Reasoning effort"
+    required: true
+  validator_script:
+    description: "Path to the structured output validator script"
+    required: true
+  emitter_script:
+    description: "Path to the output emission helper script"
     required: true
 
 outputs:

@@ -1,0 +1,11 @@
+{
+  "commit_title": "sync: split refs into dedicated",
+  "commit_body": "- Split the commands and env var tables into dedicated pages.\n- Update the original guide pages to point to the new refs.\n- Keep the changes framed as a docs restructure.",
+  "release_title": "Dedicated Reference Split",
+  "release_notes_markdown": "## Summary\nThis snapshot splits tables into dedicated references.\n\n## Added Docs\n- Added new dedicated reference pages.\n\n## Updated Docs\n- Updated guide pages to point to the new refs.\n\n## Notable Impact\nReaders now have clearer reference entry points.",
+  "key_changes": [
+    "Split commands and env vars into dedicated references",
+    "Updated guide pages to point to the new refs",
+    "Framed the change as a docs restructure"
+  ]
+}
