@@ -57,9 +57,6 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
         run: |
           artifact_dir="$RUNNER_TEMP/docs-diff-artifact/snapshot-codex-input-${RUN_ID}"
-          if [ ! -d "$artifact_dir" ] && [ -f "$RUNNER_TEMP/docs-diff-artifact/snapshot-status.txt" ]; then
-            artifact_dir="$RUNNER_TEMP/docs-diff-artifact"
-          fi
 
           if [ ! -d "$artifact_dir" ]; then
             echo "No minimal Codex input artifact found after download." >&2

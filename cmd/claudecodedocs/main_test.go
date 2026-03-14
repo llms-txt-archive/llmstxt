@@ -225,6 +225,16 @@ https://example.com/docs/intro.md
 	}
 }
 
+func TestExtractLinksErrorsWhenNoURLsExist(t *testing.T) {
+	_, err := extractLinks([]byte("# Empty index\n\nNo linked docs here.\n"))
+	if err == nil {
+		t.Fatal("extractLinks() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "no document URLs found") {
+		t.Fatalf("extractLinks() error = %v, want missing URLs message", err)
+	}
+}
+
 func TestPartitionDocumentURLsSkipsNonMarkdownLinks(t *testing.T) {
 	input := []string{
 		"https://platform.claude.com",
@@ -262,16 +272,27 @@ func TestIsMarkdownURL(t *testing.T) {
 		name string
 		url  string
 		want bool
+		err  string
 	}{
 		{name: "markdown", url: "https://example.com/docs/page.md", want: true},
 		{name: "uppercase markdown", url: "https://example.com/docs/page.MD", want: true},
 		{name: "text", url: "https://example.com/llms.txt", want: false},
 		{name: "root", url: "https://example.com", want: false},
+		{name: "relative markdown", url: "docs/page.md", want: false, err: "missing scheme or host"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := isMarkdownURL(tt.url)
+			if tt.err != "" {
+				if err == nil {
+					t.Fatalf("isMarkdownURL() error = nil, want %q", tt.err)
+				}
+				if !strings.Contains(err.Error(), tt.err) {
+					t.Fatalf("isMarkdownURL() error = %v, want %q", err, tt.err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("isMarkdownURL() error = %v", err)
 			}

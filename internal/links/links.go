@@ -57,6 +57,9 @@ func ExtractLinks(body []byte) ([]string, error) {
 		links = append(links, link)
 	}
 	sort.Strings(links)
+	if len(links) == 0 {
+		return nil, fmt.Errorf("no document URLs found in llms.txt")
+	}
 
 	return links, nil
 }
@@ -86,6 +89,9 @@ func IsMarkdownURL(rawURL string) (bool, error) {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return false, err
+	}
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return false, fmt.Errorf("missing scheme or host")
 	}
 
 	return strings.EqualFold(path.Ext(parsedURL.Path), ".md"), nil
