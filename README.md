@@ -1,147 +1,151 @@
-# Claude Docs Snapshot Tooling
+# llmstxt
 
-This repository is the shared tooling repo for archive-style documentation mirrors driven by `llms.txt`.
+> **Rename in progress.** This repo is moving from `f-pisani/claudecodedocs` to the [`llms-txt-archive`](https://github.com/llms-txt-archive) org. The Go module and binary names will be updated to match. Until then, the code still references `claudecodedocs` internally.
 
-It contains:
+Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org/) and tracking how it changes over time.
 
-- the generic crawler in `cmd/claudecodedocs`
-- the README renderer in `cmd/snapshotreadme`
-- the reusable GitHub workflow in `.github/workflows/snapshot-sync.yml`
-- optional Codex dry-run helpers under `.github/codex` and `.github/workflows/codex-dry-run.yml`
+Any site that publishes an `llms.txt` index can be archived. The current consumers mirror Anthropic's Claude documentation, but nothing here is Claude-specific.
 
-The intended consumers are thin snapshot repos such as:
+## What this repo contains
 
-- `claude-code-docs-archive`
-- `claude-platform-docs-archive`
+| Component | Path | Purpose |
+|-----------|------|---------|
+| Crawler | `cmd/claudecodedocs/` | Fetches an `llms.txt` index and all linked `.md` documents |
+| README renderer | `cmd/snapshotreadme/` | Generates a README for archive repos from a Go template |
+| Reusable workflow | `.github/workflows/snapshot-sync.yml` | End-to-end sync: crawl, diff, commit, release |
+| Codex integration | `.github/codex/`, `.github/scripts/` | AI-generated release notes with hardened validation |
+| CI | `.github/workflows/ci.yml` | Tests, linting, vulnerability scanning |
 
-Those repos should contain only:
+## What this repo does NOT contain
 
-- raw mirrored Markdown files at repo root
-- a generated `README.md`
-- a tiny caller workflow
+Generated output (fetched markdown, manifests) belongs in **archive repos**, not here. Examples:
 
-## Crawler behavior
+- [`claude-code-docs-archive`](https://github.com/f-pisani/claude-code-docs-archive) — mirrors `code.claude.com/docs/llms.txt`
+- [`claude-platform-docs-archive`](https://github.com/f-pisani/claude-platform-docs-archive) — mirrors `platform.claude.com/llms.txt`
 
-The crawler is stdlib-only and supports common `llms.txt` formats:
+Archive repos are thin: raw `.md` files at root, a generated `README.md`, and a caller workflow. That's it.
 
-- Markdown-link indexes
-- plain URL-per-line indexes
+## Architecture
 
-It can write in two layouts:
+```
+llmstxt (this repo)                        Archive repo (e.g. claude-code-docs-archive)
+========================                   ==========================================
+cmd/claudecodedocs/  (crawler binary)      .github/workflows/sync.yml (caller)
+cmd/snapshotreadme/  (readme binary)       *.md files at root (generated)
+internal/            (Go packages)         README.md (generated)
+.github/workflows/snapshot-sync.yml  <---  calls this reusable workflow
+templates/           (readme template)     releases → manifest.json (asset, NOT tracked)
+```
 
-- `nested`: compatibility mode for the old `source/` + `pages/<host>/...` structure
-- `root`: mirror URLs directly into the output root and write the source index as `llms.txt`
+### How a sync runs
 
-It also supports release-backed conditional fetch state:
+1. Archive repo's `sync.yml` calls `snapshot-sync.yml` on a schedule (e.g. hourly)
+2. Workflow checks out both the archive repo and this tool repo
+3. Downloads the previous `manifest.json` from the latest release (for conditional requests)
+4. Runs the crawler: fetches `llms.txt`, discovers linked docs (including nested indexes via BFS), downloads all `.md` files concurrently
+5. Syncs generated files into the archive repo root via `rsync`
+6. If content changed: commits, creates a tagged release with `manifest.json` as an asset
+7. For non-initial releases, Codex generates the commit message and release notes
 
-- reads a previous `manifest.json` asset with `-previous-manifest`
-- writes a fresh release asset with `-manifest-out`
-- sends both `If-None-Match` and `If-Modified-Since` when prior validators are available
-- streams fetched bodies to disk while hashing, so large docs do not accumulate in memory
-- defaults to HTTPS-only, source-host-only crawling; `-allowed-hosts` can extend that allowlist for intentional cross-host indexes
-- only mirrors `.md` URLs from `llms.txt`
-- rejects `.md` URLs that actually return HTML instead of raw markdown
-- reports skipped non-Markdown URLs in the manifest asset
-- preserves the previous snapshot copy for URLs that remain in `llms.txt` but temporarily fail to download
+### Crawler features
+
+- Parses both markdown-link and plain URL-per-line `llms.txt` formats
+- BFS discovery of nested `llms.txt` indexes (capped at 50 to prevent runaway crawling)
+- Concurrent fetching with configurable worker count and optional rate limiting (`-rate-limit`)
+- Conditional requests via `If-None-Match` / `If-Modified-Since` using the previous manifest
+- Retries transient HTTP errors (5xx, 429) with exponential backoff and `Retry-After` support
+- Response body size capped at 256 MiB per document
+- HTTPS-only with SSRF protection (blocks private/loopback IPs, validates DNS resolution)
+- Content validation: rejects `.md` URLs that return HTML (CDN error pages, login redirects)
+- Atomic output staging with crash recovery journaling
+- Preserves the previous snapshot copy when individual documents fail to fetch
+- Structured logging via `log/slog`
+- Two output layouts: `root` (flat) and `nested` (by host)
 
 ## Local usage
 
-Example against Claude Code docs in compatibility mode:
-
 ```bash
+# Build
+make build
+
+# Crawl Claude Code docs
 go run ./cmd/claudecodedocs \
   -source https://code.claude.com/docs/llms.txt \
-  -out snapshot \
-  -layout nested \
-  -manifest-out snapshot/manifest.json
-```
-
-Example against Anthropic Developer Platform docs in root mode:
-
-```bash
-go run ./cmd/claudecodedocs \
-  -source https://platform.claude.com/llms.txt \
-  -out /tmp/platform-generated \
+  -out /tmp/snapshot \
   -layout root \
-  -manifest-out /tmp/platform-manifest.json
-```
+  -manifest-out /tmp/manifest.json
 
-If a source intentionally spans more than one hostname, extend the default host allowlist:
-
-```bash
+# With rate limiting and cross-host support
 go run ./cmd/claudecodedocs \
   -source https://example.com/llms.txt \
   -allowed-hosts docs.examplecdn.com \
-  -out /tmp/example-generated \
+  -rate-limit 5 \
+  -out /tmp/snapshot \
   -layout root \
-  -manifest-out /tmp/example-manifest.json
-```
+  -manifest-out /tmp/manifest.json
 
-README rendering example:
-
-```bash
+# Render a README
 go run ./cmd/snapshotreadme \
   -template templates/snapshot-readme.md.tmpl \
   -out /tmp/README.md \
-  -title "Claude Platform Docs Archive" \
-  -site-name "Claude Platform Docs" \
-  -site-url "https://platform.claude.com" \
-  -source-url "https://platform.claude.com/llms.txt" \
-  -schedule-label "Hourly at :42 UTC" \
-  -document-count 654 \
-  -skipped-count 3 \
-  -releases-json /tmp/releases.json
+  -title "My Docs Archive" \
+  -site-name "Example Docs" \
+  -site-url "https://example.com" \
+  -source-url "https://example.com/llms.txt" \
+  -schedule-label "Hourly" \
+  -document-count 42 \
+  -skipped-count 3
 ```
 
-## Reusable workflow
+## Development
 
-Snapshot repos should call `.github/workflows/snapshot-sync.yml` with:
+```bash
+make check    # vet + test (race) + lint + govulncheck
+make test     # tests only, with race detector
+make build    # build both binaries to bin/
+```
 
-- `source_url`
-- `site_name`
-- `site_url`
-- `repo_title`
-- `schedule_label`
-- `tool_ref`
-- `allowed_hosts` when a source intentionally links to Markdown on additional hosts
-- `tool_repo_token` when this tooling repo is private
+## Setting up a new archive repo
 
-The reusable workflow:
+1. Create a new repo (e.g. `my-docs-archive`)
+2. Add a caller workflow at `.github/workflows/sync.yml`:
 
-1. checks out the caller snapshot repo
-2. checks out this tool repo at `tool_ref`
-3. installs the crawler and README renderer
-4. downloads the latest released `manifest.json` if one exists
-5. crawls into a temp directory
-6. syncs raw Markdown files into the snapshot repo root
-7. renders the generated `README.md`
-8. commits and creates a release only when raw tracked content actually changed
+```yaml
+name: Sync
+on:
+  schedule:
+    - cron: "42 * * * *"   # hourly
+  workflow_dispatch:
 
-For non-initial releases, the reusable workflow uses Codex to generate:
+jobs:
+  sync:
+    uses: f-pisani/claudecodedocs/.github/workflows/snapshot-sync.yml@main
+    with:
+      source_url: "https://example.com/llms.txt"
+      site_name: "Example Docs"
+      site_url: "https://example.com"
+      repo_title: "Example Docs Archive"
+      schedule_label: "Hourly at :42 UTC"
+      tool_ref: main
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
 
-- the snapshot commit title and body
-- the release title
-- the release notes markdown
+3. Set the `OPENAI_API_KEY` secret (required for AI-generated release notes after the initial sync)
+4. Optionally set `CODEX_MODEL` and `CODEX_EFFORT` repository variables to override Codex defaults
 
-The initial bootstrap release remains deterministic.
+> **Versioning:** We recommend pinning `tool_ref` to a tagged release (e.g. `v1.0.0`) for stability. Tagged releases are planned.
 
-If this tooling repo is private, the caller repo must provide a secret with read access to `f-pisani/claudecodedocs` and pass it to the reusable workflow as `tool_repo_token`.
+## Invariants for agents working on this codebase
 
-## Notes
+If you're an AI agent modifying this repo, these rules are critical:
 
-- `manifest.json` is a release asset, not a git-tracked file in snapshot repos.
-- Snapshot repos mirror only `.md` URLs listed in `llms.txt`.
-- Fatal crawl errors still stop the workflow, but document-level fetch failures only upload diagnostics and keep the previous snapshot copy when available.
-- Removed Markdown URLs are deleted from the tracked tree on successful syncs.
+- **`manifest.json` is a release asset.** It is never git-tracked in archive repos. It's uploaded on release creation and downloaded from the previous release for incremental syncs.
+- **The archive repo contract is sacred.** `snapshot-sync.yml` outputs raw `.md` at root + generated `README.md`. Changing this structure breaks all consumer repos.
+- **Codex validation is security-hardened.** The validator (`validate_codex_release.py`) rejects prompt injection, placeholder text, and instruction-following patterns. Do not weaken these checks.
+- **This repo contains no fetched documents.** Generated output (markdown files, manifests) belongs in archive repos. The `/snapshot/` directory is gitignored.
+- **The goal is tracking documentation changes over time.** Every sync is a release. The release history IS the changelog of how documentation evolved.
 
-## Codex defaults
+## Future direction
 
-The optional Codex dry-run workflow defaults to:
-
-- `CODEX_MODEL=gpt-5.4`
-- `CODEX_EFFORT=high`
-
-You only need to configure `OPENAI_API_KEY` for the default path. If you want to override the model or reasoning effort later, set repository variables:
-
-- `CODEX_MODEL`
-- `CODEX_EFFORT`
+This repo will move to the [`llms-txt-archive`](https://github.com/llms-txt-archive) GitHub org and may evolve into a monorepo hosting additional tools for the `llms.txt` ecosystem.
