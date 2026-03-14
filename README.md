@@ -1,7 +1,5 @@
 # llmstxt
 
-> **Rename in progress.** This repo is moving from `f-pisani/claudecodedocs` to the [`llms-txt-archive`](https://github.com/llms-txt-archive) org. The Go module and binary names will be updated to match. Until then, the code still references `claudecodedocs` internally.
-
 Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org/) and tracking how it changes over time.
 
 Any site that publishes an `llms.txt` index can be archived. The current consumers mirror Anthropic's Claude documentation, but nothing here is Claude-specific.
@@ -119,7 +117,7 @@ on:
 
 jobs:
   sync:
-    uses: f-pisani/claudecodedocs/.github/workflows/snapshot-sync.yml@main
+    uses: f-pisani/llmstxt/.github/workflows/snapshot-sync.yml@main
     with:
       source_url: "https://example.com/llms.txt"
       site_name: "Example Docs"
