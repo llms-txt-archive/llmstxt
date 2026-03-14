@@ -53,8 +53,8 @@ type Validators struct {
 	ETag           string
 }
 
-// FetchOptions configures a batch document fetch.
-type FetchOptions struct {
+// Options configures a batch document fetch.
+type Options struct {
 	Client            *http.Client
 	URLPolicy         *policy.URLPolicy
 	Layout            string
@@ -70,22 +70,22 @@ type FetchOptions struct {
 	Logger     *slog.Logger
 }
 
-func (o *FetchOptions) retrySleep() func(context.Context, int) error {
+func (o *Options) retrySleep() func(context.Context, int) error {
 	if o.RetrySleep != nil {
 		return o.RetrySleep
 	}
 	return sleepWithJitter
 }
 
-func (o *FetchOptions) logger() *slog.Logger {
+func (o *Options) logger() *slog.Logger {
 	if o != nil && o.Logger != nil {
 		return o.Logger
 	}
 	return slog.Default()
 }
 
-// FetchDocuments downloads all document URLs concurrently and returns successful results and failures.
-func FetchDocuments(ctx context.Context, docURLs []string, opts FetchOptions) ([]Result, []manifest.FetchFailure) {
+// Documents downloads all document URLs concurrently and returns successful results and failures.
+func Documents(ctx context.Context, docURLs []string, opts Options) ([]Result, []manifest.FetchFailure) {
 	type job struct {
 		index int
 		url   string
@@ -164,7 +164,7 @@ func FetchDocuments(ctx context.Context, docURLs []string, opts FetchOptions) ([
 						continue
 					}
 
-					result, err := FetchDocument(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.SnapshotRoot, job.url, relativePath, previous, opts.retrySleep())
+					result, err := Document(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.SnapshotRoot, job.url, relativePath, previous, opts.retrySleep())
 					if err != nil {
 						failure := BuildFetchFailure(opts.DiagnosticsDir, job.url, relativePath, err)
 						preserved, preservedErr := PreservePreviousDocument(opts.SnapshotRoot, job.url, relativePath, previous)
@@ -220,9 +220,9 @@ enqueueLoop:
 	return finalResults, failures
 }
 
-// FetchDocument downloads a single document URL, using conditional requests and retries as appropriate.
+// Document downloads a single document URL, using conditional requests and retries as appropriate.
 // If retrySleep is nil, the default sleepWithJitter is used.
-func FetchDocument(
+func Document(
 	ctx context.Context,
 	client *http.Client,
 	urlPolicy *policy.URLPolicy,
@@ -255,7 +255,7 @@ func FetchDocument(
 	}
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		response, err := FetchURL(ctx, client, rawURL, spoolDir, validators)
+		response, err := URL(ctx, client, rawURL, spoolDir, validators)
 		if err != nil {
 			var transient *TransientHTTPError
 			if errors.As(err, &transient) && attempt+1 < attempts {
@@ -273,7 +273,7 @@ func FetchDocument(
 				return cachedResult, nil
 			}
 
-			response, err = FetchURL(ctx, client, rawURL, spoolDir, Validators{})
+			response, err = URL(ctx, client, rawURL, spoolDir, Validators{})
 			if err != nil {
 				return Result{}, fmt.Errorf("cache validation failed: %w; refetch also failed: %w", cacheErr, err)
 			}

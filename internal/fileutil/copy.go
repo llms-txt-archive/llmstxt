@@ -15,7 +15,7 @@ func CopyFile(sourcePath, targetPath string) error {
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
-	defer sourceFile.Close()
+	defer func() { _ = sourceFile.Close() }()
 
 	// #nosec G304 -- targetPath is a staged output path rooted under a temp directory controlled by the crawler.
 	targetFile, err := os.Create(targetPath)

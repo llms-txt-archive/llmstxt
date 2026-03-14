@@ -1,6 +1,7 @@
 package links
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -51,7 +52,7 @@ func TestExtractSorted(t *testing.T) {
 
 func TestExtractNoURLs(t *testing.T) {
 	_, err := Extract([]byte("no links here"))
-	if err != ErrNoDocumentURLs {
+	if !errors.Is(err, ErrNoDocumentURLs) {
 		t.Fatalf("Extract() error = %v, want ErrNoDocumentURLs", err)
 	}
 }

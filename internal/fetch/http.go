@@ -61,8 +61,8 @@ func parseRetryAfter(value string) time.Duration {
 	return 0
 }
 
-// FetchURL performs an HTTP GET, writes the response body to a spool file, and returns the response metadata.
-func FetchURL(ctx context.Context, client *http.Client, rawURL string, spoolDir string, validators Validators) (response HTTPResponse, err error) {
+// URL performs an HTTP GET, writes the response body to a spool file, and returns the response metadata.
+func URL(ctx context.Context, client *http.Client, rawURL string, spoolDir string, validators Validators) (response HTTPResponse, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return HTTPResponse{}, err

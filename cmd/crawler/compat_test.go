@@ -23,7 +23,6 @@ const (
 	progressLogEvery  = fetchpkg.ProgressLogEvery
 )
 
-type config = apppkg.Config
 type urlPolicy = policypkg.URLPolicy
 type fetchResult = fetchpkg.Result
 type fetchFailure = manifestpkg.FetchFailure
@@ -45,7 +44,7 @@ func (e *unexpectedContentError) Error() string {
 	return e.message
 }
 
-var testStageOpts *stagepkg.StageOptions
+var testStageOpts *stagepkg.Options
 
 func toCompatUnexpected(err error) error {
 	var unexpected *fetchpkg.UnexpectedContentError
@@ -140,6 +139,7 @@ func ensureMarkdownResponse(status string, contentType string, headers map[strin
 }
 
 func writeUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, relativePath string, unexpected *unexpectedContentError) (string, error) {
+	//nolint:errorlint // type is guaranteed by toFetchUnexpected
 	return fetchpkg.WriteUnexpectedContentDiagnostic(diagnosticsDir, rawURL, relativePath, toFetchUnexpected(unexpected).(*fetchpkg.UnexpectedContentError))
 }
 
@@ -148,7 +148,7 @@ func buildDiagnosticManifest(sourceURL string, sourcePath string, source *fetchR
 }
 
 func fetchDocument(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, spoolDir string, snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
-	return fetchpkg.FetchDocument(ctx, client, urlPolicy, spoolDir, snapshotRoot, rawURL, relativePath, previous, nil)
+	return fetchpkg.Document(ctx, client, urlPolicy, spoolDir, snapshotRoot, rawURL, relativePath, previous, nil)
 }
 
 func preservePreviousDocument(snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
@@ -164,7 +164,7 @@ func safeJoin(root string, relativePath string) (string, error) {
 }
 
 func fetchDocuments(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, layout string, diagnosticsDir string, spoolDir string, snapshotRoot string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
-	return fetchpkg.FetchDocuments(ctx, docURLs, fetchpkg.FetchOptions{
+	return fetchpkg.Documents(ctx, docURLs, fetchpkg.Options{
 		Client:            client,
 		URLPolicy:         urlPolicy,
 		Layout:            layout,

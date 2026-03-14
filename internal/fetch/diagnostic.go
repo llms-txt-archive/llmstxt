@@ -84,4 +84,3 @@ func WriteUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, rela
 
 	return metaRelativePath, nil
 }
-

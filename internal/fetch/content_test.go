@@ -68,8 +68,8 @@ func TestLooksLikeHTMLDocumentMarkdown(t *testing.T) {
 
 func TestPrefixCaptureWriter(t *testing.T) {
 	w := &PrefixCaptureWriter{Limit: 5}
-	w.Write([]byte("hel"))
-	w.Write([]byte("lo world"))
+	_, _ = w.Write([]byte("hel"))
+	_, _ = w.Write([]byte("lo world"))
 	if string(w.Buf) != "hello" {
 		t.Fatalf("PrefixCaptureWriter.Buf = %q, want %q", w.Buf, "hello")
 	}

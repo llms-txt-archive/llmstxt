@@ -80,9 +80,9 @@ func mustParseURL(t *testing.T, rawURL string) *url.URL {
 }
 
 func withoutRetrySleep(_ *testing.T) {
-	// No-op: retry sleep is now configured via FetchOptions.RetrySleep,
+	// No-op: retry sleep is now configured via Options.RetrySleep,
 	// not a package-level global. Tests that need custom sleep behavior
-	// should pass it via FetchOptions directly.
+	// should pass it via Options directly.
 }
 
 func withTestFlagSet(t *testing.T, args []string) {
@@ -649,7 +649,7 @@ func TestBuildDiagnosticManifestIncludesFailuresAndDocuments(t *testing.T) {
 }
 
 func TestFetchDocumentStreamsToDiskAndComputesMetadata(t *testing.T) {
-	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		return testResponse(http.StatusOK, map[string]string{
 			"Content-Type":  "text/markdown; charset=utf-8",
 			"Last-Modified": "Fri, 13 Mar 2026 06:36:52 GMT",
@@ -692,7 +692,7 @@ func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
 	withoutRetrySleep(t)
 
 	var attempts atomic.Int32
-	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		if attempts.Add(1) == 1 {
 			return testResponse(http.StatusOK, map[string]string{
 				"Content-Type": "text/html; charset=utf-8",
@@ -904,7 +904,7 @@ func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
 	}
 
 	var requests atomic.Int32
-	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		switch requests.Add(1) {
 		case 1:
 			return testResponse(http.StatusNotModified, map[string]string{"ETag": `"etag-2"`}, ""), nil
@@ -1384,7 +1384,7 @@ func TestReplaceDirWarnsWhenBackupCleanupFails(t *testing.T) {
 		t.Fatalf("writeStageCompletionMarker() error = %v", err)
 	}
 
-	testStageOpts = &stagepkg.StageOptions{
+	testStageOpts = &stagepkg.Options{
 		RemoveAll: func(path string) error {
 			if path == backupDir {
 				return fmt.Errorf("simulated cleanup failure")
@@ -1767,7 +1767,7 @@ func TestRecursiveDiscoveryIndexCap(t *testing.T) {
 
 func loadTestdata(t *testing.T, name string) []byte {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join("testdata", name))
+	body, err := os.ReadFile(filepath.Join("testdata", name)) // #nosec G304 -- test reads fixture files
 	if err != nil {
 		t.Fatalf("os.ReadFile(testdata/%s) error = %v", name, err)
 	}

@@ -57,7 +57,7 @@ func TestCleanupSpoolFile(t *testing.T) {
 	}
 }
 
-func TestCleanupSpoolFileEmpty(t *testing.T) {
+func TestCleanupSpoolFileEmpty(t *testing.T) { //nolint:revive // required by testing framework
 	// Should not panic
 	CleanupSpoolFile("")
 }

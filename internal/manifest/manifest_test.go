@@ -46,7 +46,9 @@ func TestLoadMissingFile(t *testing.T) {
 
 func TestLoadInvalidJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.json")
-	os.WriteFile(path, []byte("{invalid"), 0o600)
+	if err := os.WriteFile(path, []byte("{invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load(invalid) expected error")
@@ -70,7 +72,9 @@ func TestWriteAndLoadSetsVersion(t *testing.T) {
 
 func TestLoadUnsupportedVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "manifest.json")
-	os.WriteFile(path, []byte(`{"version":99,"source_url":"https://example.com/llms.txt"}`), 0o600)
+	if err := os.WriteFile(path, []byte(`{"version":99,"source_url":"https://example.com/llms.txt"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() expected error for unsupported version")
@@ -79,7 +83,9 @@ func TestLoadUnsupportedVersion(t *testing.T) {
 
 func TestLoadVersionZeroBackwardsCompat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "manifest.json")
-	os.WriteFile(path, []byte(`{"source_url":"https://example.com/llms.txt"}`), 0o600)
+	if err := os.WriteFile(path, []byte(`{"source_url":"https://example.com/llms.txt"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	got, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)

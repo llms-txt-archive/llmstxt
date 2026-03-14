@@ -14,7 +14,7 @@ func TestCopyFile(t *testing.T) {
 	if err := CopyFile(src, dst); err != nil {
 		t.Fatalf("CopyFile() error = %v", err)
 	}
-	got, _ := os.ReadFile(dst)
+	got, _ := os.ReadFile(dst) // #nosec G304 -- test reads a file it just created
 	if string(got) != "hello" {
 		t.Fatalf("CopyFile() wrote %q, want %q", got, "hello")
 	}

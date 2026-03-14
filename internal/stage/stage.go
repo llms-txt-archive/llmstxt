@@ -18,13 +18,13 @@ const (
 	completeName = ".claudecodedocs-complete"
 )
 
-// StageOptions configures staging behavior. A nil *StageOptions is valid and uses defaults.
-type StageOptions struct {
+// Options configures staging behavior. A nil *Options is valid and uses defaults.
+type Options struct {
 	// RemoveAll overrides the directory removal function. Defaults to os.RemoveAll if nil.
 	RemoveAll func(string) error
 }
 
-func (o *StageOptions) removeAll() func(string) error {
+func (o *Options) removeAll() func(string) error {
 	if o != nil && o.RemoveAll != nil {
 		return o.RemoveAll
 	}
@@ -39,8 +39,8 @@ type Journal struct {
 	Phase     string `json:"phase"`
 }
 
-// StageOutput writes fetched documents to a temporary directory and atomically swaps it into outputDir.
-func StageOutput(outputDir string, source fetch.Result, documents []fetch.Result, opts *StageOptions) error {
+// Output writes fetched documents to a temporary directory and atomically swaps it into outputDir.
+func Output(outputDir string, source fetch.Result, documents []fetch.Result, opts *Options) error {
 	parentDir := filepath.Dir(outputDir)
 	if err := os.MkdirAll(parentDir, 0o750); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
@@ -95,7 +95,7 @@ func writeResult(root string, result fetch.Result) error {
 }
 
 // ReplaceDir atomically replaces outputDir with tempDir using a backup-and-rename strategy.
-func ReplaceDir(tempDir string, outputDir string, opts *StageOptions) error {
+func ReplaceDir(tempDir string, outputDir string, opts *Options) error {
 	removeAll := opts.removeAll()
 	backupDir := outputDir + ".bak"
 	journal := Journal{
@@ -169,7 +169,7 @@ func ReplaceDir(tempDir string, outputDir string, opts *StageOptions) error {
 }
 
 // ReconcileState recovers from a previously interrupted staging operation by replaying the journal.
-func ReconcileState(outputDir string, opts *StageOptions) error {
+func ReconcileState(outputDir string, opts *Options) error {
 	removeAll := opts.removeAll()
 	backupDir := outputDir + ".bak"
 	outputExists := pathExists(outputDir)

@@ -224,7 +224,7 @@ func processIndex(
 		}
 	}
 
-	fetchResult, fetchErr := fetch.FetchDocument(ctx, cfg.Client, cfg.URLPolicy, cfg.SpoolDir, cfg.SnapshotRoot, rawURL, relativePath, previous, nil)
+	fetchResult, fetchErr := fetch.Document(ctx, cfg.Client, cfg.URLPolicy, cfg.SpoolDir, cfg.SnapshotRoot, rawURL, relativePath, previous, nil)
 	if fetchErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", fetchErr)
 		skipEntry(skipped, rawURL, "fetch failed", fetchErr)
@@ -275,8 +275,8 @@ func DiscoverDocuments(
 		seenDocs[normalizeIndexURL(u)] = true
 	}
 
-	queue := make([]string, len(indexQueue))
-	copy(queue, indexQueue)
+	queue := make([]string, 0, len(indexQueue))
+	queue = append(queue, indexQueue...)
 
 	var indexResults []fetch.Result
 
@@ -356,7 +356,7 @@ func Run(ctx context.Context, cfg Config) error {
 	sourcePath := links.SourcePath(cfg.Layout)
 	sourcePrevious := manifest.PreviousSourceEntry(previousManifest, sourcePath)
 
-	sourceResult, err := fetch.FetchDocument(ctx, client, urlPolicy, spoolDir, cfg.SnapshotRoot, cfg.SourceURL, sourcePath, sourcePrevious, nil)
+	sourceResult, err := fetch.Document(ctx, client, urlPolicy, spoolDir, cfg.SnapshotRoot, cfg.SourceURL, sourcePath, sourcePrevious, nil)
 	if err != nil {
 		failures := []manifest.FetchFailure{fetch.BuildFetchFailure(cfg.DiagnosticsDir, cfg.SourceURL, sourcePath, err)}
 		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, nil, nil, nil, failures))
@@ -404,7 +404,7 @@ func Run(ctx context.Context, cfg Config) error {
 		limiter = rate.NewLimiter(rate.Limit(cfg.RateLimit), int(cfg.RateLimit)+1)
 	}
 
-	documents, failures := fetch.FetchDocuments(ctx, docURLs, fetch.FetchOptions{
+	documents, failures := fetch.Documents(ctx, docURLs, fetch.Options{
 		Client:            client,
 		URLPolicy:         urlPolicy,
 		Layout:            cfg.Layout,
@@ -426,7 +426,7 @@ func Run(ctx context.Context, cfg Config) error {
 	allResults := make([]fetch.Result, 0, len(documents)+len(discovery.IndexResults))
 	allResults = append(allResults, documents...)
 	allResults = append(allResults, discovery.IndexResults...)
-	if err := stage.StageOutput(cfg.OutputDir, sourceResult, allResults, nil); err != nil {
+	if err := stage.Output(cfg.OutputDir, sourceResult, allResults, nil); err != nil {
 		failureWithStage := append([]manifest.FetchFailure(nil), failures...)
 		failureWithStage = append(failureWithStage, manifest.FetchFailure{
 			URL:   cfg.SourceURL,
