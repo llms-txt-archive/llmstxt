@@ -1,3 +1,4 @@
+// Package app orchestrates the end-to-end llms.txt sync workflow.
 package app
 
 import (
@@ -16,6 +17,7 @@ import (
 	"claudecodedocs/internal/stage"
 )
 
+// Config holds the CLI flags and settings for a sync run.
 type Config struct {
 	SourceURL            string
 	OutputDir            string
@@ -29,6 +31,7 @@ type Config struct {
 	Concurrency          int
 }
 
+// PartialSyncError reports documents that failed to fetch while others succeeded.
 type PartialSyncError struct {
 	Failures []manifest.FetchFailure
 }
@@ -47,6 +50,7 @@ func (e *PartialSyncError) Error() string {
 	return strings.Join(lines, "\n")
 }
 
+// BuildManifest assembles a manifest from the source and document fetch results.
 func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure) manifest.Manifest {
 	manifestData := manifest.Manifest{
 		SourceURL:            source.URL,
@@ -80,6 +84,7 @@ func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []mani
 	return manifestData
 }
 
+// BuildDiagnosticManifest assembles a manifest for error diagnostics, tolerating nil source results.
 func BuildDiagnosticManifest(sourceURL string, sourcePath string, source *fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure) manifest.Manifest {
 	manifestData := manifest.Manifest{
 		SourceURL:     sourceURL,
@@ -112,15 +117,17 @@ func BuildDiagnosticManifest(sourceURL string, sourcePath string, source *fetch.
 	return manifestData
 }
 
+// WriteDiagnosticManifest writes a diagnostic manifest to disk, logging errors instead of returning them.
 func WriteDiagnosticManifest(manifestPath string, manifestData manifest.Manifest) {
 	if manifestPath == "" {
 		return
 	}
-	if err := manifest.Write(manifestPath, manifestData); err != nil {
+	if err := manifest.Write(manifestPath, &manifestData); err != nil {
 		log.Printf("Failed to write diagnostics manifest %s: %v", manifestPath, err)
 	}
 }
 
+// Run executes the full sync: fetch the llms.txt source, download linked documents, and stage the output.
 func Run(ctx context.Context, cfg Config) error {
 	urlPolicy, err := policy.NewURLPolicy(cfg.SourceURL, cfg.AllowedHostsCSV)
 	if err != nil {
@@ -147,7 +154,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	previousDocuments := manifest.PreviousDocumentsByURL(previousManifest)
-	sourcePath := links.SourcePathForLayout(cfg.Layout)
+	sourcePath := links.SourcePath(cfg.Layout)
 	sourcePrevious := manifest.PreviousSourceEntry(previousManifest, sourcePath)
 
 	sourceResult, err := fetch.FetchDocument(ctx, client, urlPolicy, spoolDir, cfg.SnapshotRoot, cfg.SourceURL, sourcePath, sourcePrevious)
@@ -164,32 +171,30 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("read fetched llms.txt: %w", err)
 	}
 
-	extractedLinks, err := links.ExtractLinks(sourceBody)
+	extractedLinks, err := links.Extract(sourceBody)
 	if err != nil {
 		failures := []manifest.FetchFailure{{URL: cfg.SourceURL, Error: err.Error()}}
 		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, nil, nil, failures))
 		return err
 	}
 
-	docURLs, skipped, err := links.PartitionDocumentURLs(extractedLinks)
+	docURLs, skipped, err := links.Partition(extractedLinks)
 	if err != nil {
 		failures := []manifest.FetchFailure{{URL: cfg.SourceURL, Error: err.Error()}}
 		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, nil, skipped, failures))
 		return err
 	}
 
-	documents, failures := fetch.FetchDocuments(
-		ctx,
-		client,
-		urlPolicy,
-		cfg.Layout,
-		cfg.DiagnosticsDir,
-		spoolDir,
-		cfg.SnapshotRoot,
-		docURLs,
-		cfg.Concurrency,
-		previousDocuments,
-	)
+	documents, failures := fetch.FetchDocuments(ctx, docURLs, fetch.FetchOptions{
+		Client:            client,
+		URLPolicy:         urlPolicy,
+		Layout:            cfg.Layout,
+		DiagnosticsDir:    cfg.DiagnosticsDir,
+		SpoolDir:          spoolDir,
+		SnapshotRoot:      cfg.SnapshotRoot,
+		Concurrency:       cfg.Concurrency,
+		PreviousDocuments: previousDocuments,
+	})
 	if err := ctx.Err(); err != nil {
 		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, documents, skipped, failures))
 		return err
@@ -206,7 +211,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	if err := manifest.Write(cfg.ManifestOut, manifestData); err != nil {
+	if err := manifest.Write(cfg.ManifestOut, &manifestData); err != nil {
 		return err
 	}
 

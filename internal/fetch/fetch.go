@@ -1,21 +1,15 @@
+// Package fetch downloads and validates documents referenced by an llms.txt index.
 package fetch
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math/rand/v2"
 	"net/http"
-	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,13 +20,28 @@ import (
 )
 
 const (
+	// MarkdownFetchAttempts is the number of times a markdown URL is retried on unexpected content.
 	MarkdownFetchAttempts = 3
-	HTMLSniffBytes        = 4096
-	ProgressLogEvery      = 25
+	// ProgressLogEvery controls how often a progress message is logged during batch fetches.
+	ProgressLogEvery = 25
 )
 
-var RetrySleepWithJitter = sleepWithJitter
+// ErrNoPreviousEntry is returned when no previous manifest entry exists for a document.
+var ErrNoPreviousEntry = errors.New("no previous snapshot entry")
 
+var retrySleepWithJitter = sleepWithJitter
+
+// SetRetrySleepFunc overrides the retry sleep function for testing.
+func SetRetrySleepFunc(fn func(context.Context, int) error) {
+	retrySleepWithJitter = fn
+}
+
+// ResetRetrySleepFunc restores the default retry sleep function.
+func ResetRetrySleepFunc() {
+	retrySleepWithJitter = sleepWithJitter
+}
+
+// Result holds the outcome of fetching a single URL.
 type Result struct {
 	URL            string
 	RelativePath   string
@@ -43,64 +52,26 @@ type Result struct {
 	ETag           string
 }
 
-type UnexpectedContentError struct {
-	Message     string
-	Status      string
-	ContentType string
-	Headers     map[string][]string
-	Sniff       []byte
-	BodyPath    string
-}
-
+// Validators holds conditional-request values for HTTP caching headers.
 type Validators struct {
 	LastModifiedAt string
 	ETag           string
 }
 
-type HTTPResponse struct {
-	Status         string
-	ContentType    string
-	Headers        map[string][]string
-	LastModifiedAt string
-	ETag           string
-	NotModified    bool
-	BodyPath       string
-	Sniff          []byte
-	SHA256         string
-	Bytes          int64
+// FetchOptions configures a batch document fetch.
+type FetchOptions struct {
+	Client            *http.Client
+	URLPolicy         *policy.URLPolicy
+	Layout            string
+	DiagnosticsDir    string
+	SpoolDir          string
+	SnapshotRoot      string
+	Concurrency       int
+	PreviousDocuments map[string]manifest.Entry
 }
 
-type PrefixCaptureWriter struct {
-	Limit int
-	Buf   []byte
-}
-
-func (e *UnexpectedContentError) Error() string {
-	return e.Message
-}
-
-func (w *PrefixCaptureWriter) Write(p []byte) (int, error) {
-	if remaining := w.Limit - len(w.Buf); remaining > 0 {
-		if remaining > len(p) {
-			remaining = len(p)
-		}
-		w.Buf = append(w.Buf, p[:remaining]...)
-	}
-	return len(p), nil
-}
-
-func FetchDocuments(
-	ctx context.Context,
-	client *http.Client,
-	urlPolicy *policy.URLPolicy,
-	layout string,
-	diagnosticsDir string,
-	spoolDir string,
-	snapshotRoot string,
-	docURLs []string,
-	concurrency int,
-	previousDocuments map[string]manifest.Entry,
-) ([]Result, []manifest.FetchFailure) {
+// FetchDocuments downloads all document URLs concurrently and returns successful results and failures.
+func FetchDocuments(ctx context.Context, docURLs []string, opts FetchOptions) ([]Result, []manifest.FetchFailure) {
 	type job struct {
 		index int
 		url   string
@@ -108,7 +79,7 @@ func FetchDocuments(
 
 	results := make([]Result, len(docURLs))
 	succeeded := make([]bool, len(docURLs))
-	failures := make([]manifest.FetchFailure, 0)
+	var failures []manifest.FetchFailure
 
 	var (
 		mu        sync.Mutex
@@ -132,7 +103,7 @@ func FetchDocuments(
 	}
 
 	jobs := make(chan job)
-	for worker := 0; worker < concurrency; worker++ {
+	for worker := 0; worker < opts.Concurrency; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -145,20 +116,20 @@ func FetchDocuments(
 						return
 					}
 
-					previous := previousDocuments[job.url]
+					previous := opts.PreviousDocuments[job.url]
 					relativePath := filepath.FromSlash(previous.Path)
 					if relativePath == "" {
 						var err error
-						relativePath, err = links.RelativePathForURL(job.url, layout)
+						relativePath, err = links.RelativePath(job.url, opts.Layout)
 						if err != nil {
 							recordFailure(job.url, manifest.FetchFailure{URL: job.url, Error: fmt.Sprintf("map URL: %v", err)})
 							continue
 						}
 					}
 
-					if err := urlPolicy.Validate(job.url); err != nil {
+					if err := opts.URLPolicy.Validate(job.url); err != nil {
 						failure := manifest.FetchFailure{URL: job.url, Error: err.Error()}
-						preserved, preservedErr := PreservePreviousDocument(snapshotRoot, job.url, relativePath, previous)
+						preserved, preservedErr := PreservePreviousDocument(opts.SnapshotRoot, job.url, relativePath, previous)
 						if preservedErr == nil {
 							failure.PreservedExisting = true
 							mu.Lock()
@@ -173,10 +144,10 @@ func FetchDocuments(
 						continue
 					}
 
-					result, err := FetchDocument(ctx, client, urlPolicy, spoolDir, snapshotRoot, job.url, relativePath, previous)
+					result, err := FetchDocument(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.SnapshotRoot, job.url, relativePath, previous)
 					if err != nil {
-						failure := BuildFetchFailure(diagnosticsDir, job.url, relativePath, err)
-						preserved, preservedErr := PreservePreviousDocument(snapshotRoot, job.url, relativePath, previous)
+						failure := BuildFetchFailure(opts.DiagnosticsDir, job.url, relativePath, err)
+						preserved, preservedErr := PreservePreviousDocument(opts.SnapshotRoot, job.url, relativePath, previous)
 						if preservedErr == nil {
 							failure.PreservedExisting = true
 							mu.Lock()
@@ -229,35 +200,7 @@ enqueueLoop:
 	return finalResults, failures
 }
 
-func PreservePreviousDocument(snapshotRoot string, rawURL string, relativePath string, previous manifest.Entry) (Result, error) {
-	if previous.Path == "" {
-		return Result{}, errors.New("no previous snapshot entry")
-	}
-
-	previousPath := previous.Path
-	if previousPath == "" {
-		previousPath = filepath.ToSlash(relativePath)
-	}
-
-	localPath, sha256Value, bytesCount, err := SummarizeExistingFile(snapshotRoot, previousPath)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := ValidateCachedSummary(previousPath, sha256Value, bytesCount, previous); err != nil {
-		return Result{}, err
-	}
-
-	return Result{
-		URL:            rawURL,
-		RelativePath:   relativePath,
-		LocalPath:      localPath,
-		SHA256:         sha256Value,
-		Bytes:          bytesCount,
-		LastModifiedAt: previous.LastModifiedAt,
-		ETag:           previous.ETag,
-	}, nil
-}
-
+// FetchDocument downloads a single document URL, using conditional requests and retries as appropriate.
 func FetchDocument(
 	ctx context.Context,
 	client *http.Client,
@@ -272,7 +215,7 @@ func FetchDocument(
 		return Result{}, err
 	}
 
-	requireMarkdown, err := links.IsMarkdownURL(rawURL)
+	requireMarkdown, err := links.IsMarkdown(rawURL)
 	if err != nil {
 		return Result{}, err
 	}
@@ -300,7 +243,7 @@ func FetchDocument(
 
 			response, err = FetchURL(ctx, client, rawURL, spoolDir, Validators{})
 			if err != nil {
-				return Result{}, fmt.Errorf("%v (after cache-miss refetch failed: %w)", cacheErr, err)
+				return Result{}, fmt.Errorf("cache validation failed: %v; refetch also failed: %w", cacheErr, err)
 			}
 		}
 
@@ -309,7 +252,7 @@ func FetchDocument(
 				var unexpected *UnexpectedContentError
 				if errors.As(err, &unexpected) && attempt+1 < attempts {
 					CleanupSpoolFile(response.BodyPath)
-					if sleepErr := RetrySleepWithJitter(ctx, attempt); sleepErr != nil {
+					if sleepErr := retrySleepWithJitter(ctx, attempt); sleepErr != nil {
 						return Result{}, sleepErr
 					}
 					continue
@@ -332,228 +275,6 @@ func FetchDocument(
 	return Result{}, fmt.Errorf("failed to fetch %s", rawURL)
 }
 
-func LoadCachedDocument(snapshotRoot string, rawURL string, relativePath string, previous manifest.Entry, response HTTPResponse) (Result, error) {
-	localPath, sha256Value, bytesCount, err := SummarizeExistingFile(snapshotRoot, filepath.ToSlash(relativePath))
-	if err != nil {
-		return Result{}, err
-	}
-	if err := ValidateCachedSummary(filepath.ToSlash(relativePath), sha256Value, bytesCount, previous); err != nil {
-		return Result{}, err
-	}
-
-	return Result{
-		URL:            rawURL,
-		RelativePath:   relativePath,
-		LocalPath:      localPath,
-		SHA256:         sha256Value,
-		Bytes:          bytesCount,
-		LastModifiedAt: CoalesceValidator(response.LastModifiedAt, previous.LastModifiedAt),
-		ETag:           CoalesceValidator(response.ETag, previous.ETag),
-	}, nil
-}
-
-func ValidateCachedSummary(relativePath string, sha256Value string, bytesCount int64, previous manifest.Entry) error {
-	if previous.SHA256 != "" && previous.SHA256 != sha256Value {
-		return fmt.Errorf("cached file %s does not match previous manifest hash", relativePath)
-	}
-	if previous.Bytes > 0 && previous.Bytes != bytesCount {
-		return fmt.Errorf("cached file %s size does not match previous manifest", relativePath)
-	}
-	return nil
-}
-
-func FetchURL(ctx context.Context, client *http.Client, rawURL string, spoolDir string, validators Validators) (response HTTPResponse, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return HTTPResponse{}, err
-	}
-
-	req.Header.Set("User-Agent", buildUserAgent())
-	req.Header.Set("Accept", "text/plain, text/markdown, text/*;q=0.9, */*;q=0.1")
-	if ifNoneMatch := NormalizeETag(validators.ETag); ifNoneMatch != "" {
-		req.Header.Set("If-None-Match", ifNoneMatch)
-	}
-	if ifModifiedSince := IfModifiedSinceHeader(validators.LastModifiedAt); ifModifiedSince != "" {
-		req.Header.Set("If-Modified-Since", ifModifiedSince)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return HTTPResponse{}, err
-	}
-	defer func() {
-		if closeErr := resp.Body.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("close response body: %w", closeErr)
-		}
-	}()
-
-	response = HTTPResponse{
-		Status:         resp.Status,
-		ContentType:    strings.TrimSpace(resp.Header.Get("Content-Type")),
-		Headers:        copyHeader(resp.Header),
-		LastModifiedAt: NormalizeLastModified(resp.Header.Get("Last-Modified")),
-		ETag:           NormalizeETag(resp.Header.Get("ETag")),
-		NotModified:    resp.StatusCode == http.StatusNotModified,
-	}
-
-	if resp.StatusCode == http.StatusNotModified {
-		response.LastModifiedAt = CoalesceValidator(response.LastModifiedAt, validators.LastModifiedAt)
-		response.ETag = CoalesceValidator(response.ETag, validators.ETag)
-		return response, nil
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return HTTPResponse{}, fmt.Errorf("unexpected HTTP %s", resp.Status)
-	}
-
-	spoolFile, err := os.CreateTemp(spoolDir, "fetch-*")
-	if err != nil {
-		return HTTPResponse{}, fmt.Errorf("create spool file: %w", err)
-	}
-
-	cleanupOnError := true
-	defer func() {
-		_ = spoolFile.Close()
-		if cleanupOnError {
-			_ = os.Remove(spoolFile.Name())
-		}
-	}()
-
-	hasher := sha256.New()
-	capture := &PrefixCaptureWriter{Limit: HTMLSniffBytes}
-
-	written, err := io.Copy(io.MultiWriter(spoolFile, hasher, capture), resp.Body)
-	if err != nil {
-		return HTTPResponse{}, fmt.Errorf("stream response body: %w", err)
-	}
-
-	response.BodyPath = spoolFile.Name()
-	response.Sniff = append([]byte(nil), capture.Buf...)
-	response.SHA256 = hex.EncodeToString(hasher.Sum(nil))
-	response.Bytes = written
-
-	cleanupOnError = false
-	return response, nil
-}
-
-func EnsureMarkdownResponse(status string, contentType string, headers map[string][]string, sniff []byte, bodyPath string) error {
-	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
-		return &UnexpectedContentError{
-			Message:     fmt.Sprintf("expected markdown response but received %s", mediaType),
-			Status:      status,
-			ContentType: contentType,
-			Headers:     headers,
-			Sniff:       append([]byte(nil), sniff...),
-			BodyPath:    bodyPath,
-		}
-	}
-
-	if LooksLikeHTMLDocument(sniff) {
-		return &UnexpectedContentError{
-			Message:     "expected markdown response but received HTML document",
-			Status:      status,
-			ContentType: contentType,
-			Headers:     headers,
-			Sniff:       append([]byte(nil), sniff...),
-			BodyPath:    bodyPath,
-		}
-	}
-
-	return nil
-}
-
-func copyHeader(header http.Header) map[string][]string {
-	if len(header) == 0 {
-		return nil
-	}
-
-	cloned := make(map[string][]string, len(header))
-	for key, values := range header {
-		cloned[key] = append([]string(nil), values...)
-	}
-	return cloned
-}
-
-func LooksLikeHTMLDocument(body []byte) bool {
-	trimmed := NormalizeHTMLSniff(body)
-	if trimmed == "" {
-		return false
-	}
-
-	lower := strings.ToLower(trimmed)
-	return strings.HasPrefix(lower, "<!doctype html") ||
-		strings.HasPrefix(lower, "<html") ||
-		strings.HasPrefix(lower, "<head") ||
-		strings.HasPrefix(lower, "<body")
-}
-
-func NormalizeHTMLSniff(body []byte) string {
-	trimmed := strings.TrimSpace(string(body))
-	trimmed = strings.TrimPrefix(trimmed, "\ufeff")
-
-	for {
-		trimmed = strings.TrimSpace(trimmed)
-		switch {
-		case strings.HasPrefix(trimmed, "<?xml"):
-			end := strings.Index(trimmed, "?>")
-			if end == -1 {
-				return trimmed
-			}
-			trimmed = trimmed[end+2:]
-		case strings.HasPrefix(trimmed, "<!--"):
-			end := strings.Index(trimmed, "-->")
-			if end == -1 {
-				return trimmed
-			}
-			trimmed = trimmed[end+3:]
-		default:
-			return trimmed
-		}
-	}
-}
-
-func buildUserAgent() string {
-	return fmt.Sprintf("claudecodedocs-sync/2.0 (%s %s)", runtime.GOOS, runtime.GOARCH)
-}
-
-func IfModifiedSinceHeader(lastModifiedAt string) string {
-	if lastModifiedAt == "" {
-		return ""
-	}
-
-	parsed, err := time.Parse(time.RFC3339, lastModifiedAt)
-	if err != nil {
-		return ""
-	}
-
-	return parsed.UTC().Format(http.TimeFormat)
-}
-
-func NormalizeLastModified(value string) string {
-	if value == "" {
-		return ""
-	}
-
-	parsed, err := http.ParseTime(value)
-	if err != nil {
-		return ""
-	}
-
-	return parsed.UTC().Format(time.RFC3339)
-}
-
-func NormalizeETag(value string) string {
-	return strings.TrimSpace(value)
-}
-
-func CoalesceValidator(current string, previous string) string {
-	if current != "" {
-		return current
-	}
-	return previous
-}
-
 func sleepWithJitter(ctx context.Context, attempt int) error {
 	base := 250 * time.Millisecond
 	wait := base * time.Duration(1<<attempt)
@@ -569,181 +290,4 @@ func sleepWithJitter(ctx context.Context, attempt int) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-func HashBytes(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
-
-func SummarizeExistingFile(root string, relativePath string) (localPath string, sha256Value string, bytesCount int64, err error) {
-	localPath, err = SafeJoin(root, relativePath)
-	if err != nil {
-		return "", "", 0, err
-	}
-
-	// #nosec G304 -- localPath is anchored to snapshotRoot via SafeJoin.
-	file, err := os.Open(localPath)
-	if err != nil {
-		return "", "", 0, fmt.Errorf("read cached file %s: %w", relativePath, err)
-	}
-	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("close cached file %s: %w", relativePath, closeErr)
-		}
-	}()
-
-	hasher := sha256.New()
-	written, err := io.Copy(hasher, file)
-	if err != nil {
-		return "", "", 0, fmt.Errorf("hash cached file %s: %w", relativePath, err)
-	}
-
-	return localPath, hex.EncodeToString(hasher.Sum(nil)), written, nil
-}
-
-func SafeJoin(root string, relativePath string) (string, error) {
-	if root == "" {
-		return "", errors.New("missing root directory")
-	}
-
-	absoluteRoot, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve root directory: %w", err)
-	}
-
-	cleanRelative := filepath.Clean(filepath.FromSlash(relativePath))
-	if filepath.IsAbs(cleanRelative) {
-		return "", fmt.Errorf("absolute paths are not allowed: %s", relativePath)
-	}
-
-	targetPath := filepath.Join(absoluteRoot, cleanRelative)
-	relativeToRoot, err := filepath.Rel(absoluteRoot, targetPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve path %s: %w", relativePath, err)
-	}
-	if relativeToRoot == ".." || strings.HasPrefix(relativeToRoot, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path escapes snapshot root: %s", relativePath)
-	}
-
-	return targetPath, nil
-}
-
-func CleanupSpoolFile(path string) {
-	if path == "" {
-		return
-	}
-	_ = os.Remove(path)
-}
-
-func BuildFetchFailure(diagnosticsDir string, rawURL string, relativePath string, err error) manifest.FetchFailure {
-	failure := manifest.FetchFailure{URL: rawURL, Error: err.Error()}
-
-	var unexpected *UnexpectedContentError
-	if errors.As(err, &unexpected) {
-		diagnosticPath, diagnosticErr := WriteUnexpectedContentDiagnostic(diagnosticsDir, rawURL, relativePath, unexpected)
-		if diagnosticErr != nil {
-			failure.Error = fmt.Sprintf("%s (failed to write diagnostic: %v)", failure.Error, diagnosticErr)
-		} else {
-			failure.DiagnosticPath = diagnosticPath
-		}
-	}
-
-	return failure
-}
-
-func WriteUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, relativePath string, unexpected *UnexpectedContentError) (string, error) {
-	if diagnosticsDir == "" {
-		return "", nil
-	}
-
-	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(unexpected.ContentType, ";")[0]))
-	bodyExtension := ".txt"
-	if mediaType == "text/html" || mediaType == "application/xhtml+xml" || LooksLikeHTMLDocument(unexpected.Sniff) {
-		bodyExtension = ".html"
-	}
-
-	relativePath = filepath.ToSlash(relativePath)
-	bodyRelativePath := relativePath + ".unexpected-content" + bodyExtension
-	metaRelativePath := relativePath + ".unexpected-content.json"
-	bodyPath := filepath.Join(diagnosticsDir, filepath.FromSlash(bodyRelativePath))
-	metaPath := filepath.Join(diagnosticsDir, filepath.FromSlash(metaRelativePath))
-
-	if err := os.MkdirAll(filepath.Dir(bodyPath), 0o750); err != nil {
-		return "", fmt.Errorf("create diagnostics directory: %w", err)
-	}
-	if err := copyFile(unexpected.BodyPath, bodyPath); err != nil {
-		return "", fmt.Errorf("write diagnostic body: %w", err)
-	}
-
-	metadata := struct {
-		URL          string              `json:"url"`
-		RelativePath string              `json:"relative_path"`
-		Error        string              `json:"error"`
-		Status       string              `json:"status,omitempty"`
-		ContentType  string              `json:"content_type,omitempty"`
-		Headers      map[string][]string `json:"headers,omitempty"`
-		BodyPath     string              `json:"body_path"`
-	}{
-		URL:          rawURL,
-		RelativePath: relativePath,
-		Error:        unexpected.Message,
-		Status:       unexpected.Status,
-		ContentType:  unexpected.ContentType,
-		Headers:      unexpected.Headers,
-		BodyPath:     bodyRelativePath,
-	}
-
-	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshal diagnostic metadata: %w", err)
-	}
-	metadataBytes = append(metadataBytes, '\n')
-
-	if err := os.WriteFile(metaPath, metadataBytes, 0o600); err != nil {
-		return "", fmt.Errorf("write diagnostic metadata: %w", err)
-	}
-
-	return metaRelativePath, nil
-}
-
-func copyFile(sourcePath string, targetPath string) (err error) {
-	// #nosec G304 -- sourcePath is a local spool or cached snapshot path produced by the crawler.
-	sourceFile, err := os.Open(sourcePath)
-	if err != nil {
-		return err
-	}
-
-	// #nosec G304 -- targetPath is a diagnostic path rooted under a temp directory controlled by the crawler.
-	targetFile, err := os.Create(targetPath)
-	if err != nil {
-		_ = sourceFile.Close()
-		return err
-	}
-
-	success := false
-	defer func() {
-		if !success {
-			_ = targetFile.Close()
-			_ = sourceFile.Close()
-			_ = os.Remove(targetPath)
-		}
-	}()
-
-	if _, err := io.Copy(targetFile, sourceFile); err != nil {
-		return err
-	}
-	if err := sourceFile.Close(); err != nil {
-		return err
-	}
-	if err := targetFile.Close(); err != nil {
-		return err
-	}
-	// #nosec G302 -- diagnostics copies are intended to remain world-readable in uploaded artifacts.
-	if err := os.Chmod(targetPath, 0o644); err != nil {
-		return err
-	}
-
-	success = true
-	return nil
 }

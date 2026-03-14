@@ -1,3 +1,4 @@
+// Package stage atomically replaces the output directory with freshly fetched documents.
 package stage
 
 import (
@@ -17,8 +18,9 @@ const (
 	completeName = ".claudecodedocs-complete"
 )
 
-var RemoveAllPath = os.RemoveAll
+var removeAllPath = os.RemoveAll
 
+// Journal records the in-progress state of an atomic directory replacement for crash recovery.
 type Journal struct {
 	TempDir   string `json:"temp_dir"`
 	OutputDir string `json:"output_dir"`
@@ -26,6 +28,7 @@ type Journal struct {
 	Phase     string `json:"phase"`
 }
 
+// StageOutput writes fetched documents to a temporary directory and atomically swaps it into outputDir.
 func StageOutput(outputDir string, source fetch.Result, documents []fetch.Result) error {
 	parentDir := filepath.Dir(outputDir)
 	if err := os.MkdirAll(parentDir, 0o750); err != nil {
@@ -43,7 +46,7 @@ func StageOutput(outputDir string, source fetch.Result, documents []fetch.Result
 	cleanupTemp := true
 	defer func() {
 		if cleanupTemp {
-			_ = RemoveAllPath(tempDir)
+			_ = removeAllPath(tempDir)
 		}
 	}()
 
@@ -79,33 +82,29 @@ func writeResult(root string, result fetch.Result) error {
 	return nil
 }
 
-func copyFile(sourcePath string, targetPath string) (err error) {
+func copyFile(sourcePath string, targetPath string) error {
 	// #nosec G304 -- sourcePath is a local spool or cached snapshot path produced by the crawler.
 	sourceFile, err := os.Open(sourcePath)
 	if err != nil {
 		return err
 	}
+	defer sourceFile.Close()
 
 	// #nosec G304 -- targetPath is a staged output path rooted under a temp directory controlled by the crawler.
 	targetFile, err := os.Create(targetPath)
 	if err != nil {
-		_ = sourceFile.Close()
 		return err
 	}
 
 	success := false
 	defer func() {
+		_ = targetFile.Close()
 		if !success {
-			_ = targetFile.Close()
-			_ = sourceFile.Close()
 			_ = os.Remove(targetPath)
 		}
 	}()
 
 	if _, err := io.Copy(targetFile, sourceFile); err != nil {
-		return err
-	}
-	if err := sourceFile.Close(); err != nil {
 		return err
 	}
 	if err := targetFile.Close(); err != nil {
@@ -120,6 +119,7 @@ func copyFile(sourcePath string, targetPath string) (err error) {
 	return nil
 }
 
+// ReplaceDir atomically replaces outputDir with tempDir using a backup-and-rename strategy.
 func ReplaceDir(tempDir string, outputDir string) error {
 	backupDir := outputDir + ".bak"
 	journal := Journal{
@@ -143,7 +143,7 @@ func ReplaceDir(tempDir string, outputDir string) error {
 		backupExists = false
 	}
 	if backupExists && outputExists {
-		if err := RemoveAllPath(backupDir); err != nil {
+		if err := removeAllPath(backupDir); err != nil {
 			return fmt.Errorf("remove stale backup directory: %w", err)
 		}
 		backupExists = false
@@ -181,7 +181,7 @@ func ReplaceDir(tempDir string, outputDir string) error {
 	}
 
 	if backupExists {
-		if err := RemoveAllPath(backupDir); err != nil {
+		if err := removeAllPath(backupDir); err != nil {
 			log.Printf("Warning: failed to remove backup directory %s: %v", backupDir, err)
 		}
 	}
@@ -192,6 +192,7 @@ func ReplaceDir(tempDir string, outputDir string) error {
 	return nil
 }
 
+// ReconcileState recovers from a previously interrupted staging operation by replaying the journal.
 func ReconcileState(outputDir string) error {
 	backupDir := outputDir + ".bak"
 	outputExists := pathExists(outputDir)
@@ -203,7 +204,7 @@ func ReconcileState(outputDir string) error {
 	}
 	if journal == nil {
 		if outputExists && backupExists {
-			if err := RemoveAllPath(backupDir); err != nil {
+			if err := removeAllPath(backupDir); err != nil {
 				return fmt.Errorf("remove stale backup directory: %w", err)
 			}
 			return nil
@@ -224,12 +225,12 @@ func ReconcileState(outputDir string) error {
 	switch {
 	case outputExists:
 		if backupExists {
-			if err := RemoveAllPath(journal.BackupDir); err != nil {
+			if err := removeAllPath(journal.BackupDir); err != nil {
 				return fmt.Errorf("remove stale backup directory: %w", err)
 			}
 		}
 		if tempExists {
-			if err := RemoveAllPath(journal.TempDir); err != nil {
+			if err := removeAllPath(journal.TempDir); err != nil {
 				return fmt.Errorf("remove stale staged directory: %w", err)
 			}
 		}
@@ -238,7 +239,7 @@ func ReconcileState(outputDir string) error {
 			return fmt.Errorf("restore backup output: %w", err)
 		}
 		if tempExists {
-			if err := RemoveAllPath(journal.TempDir); err != nil {
+			if err := removeAllPath(journal.TempDir); err != nil {
 				return fmt.Errorf("remove stale staged directory: %w", err)
 			}
 		}
@@ -250,7 +251,7 @@ func ReconcileState(outputDir string) error {
 			return err
 		}
 	case tempExists:
-		if err := RemoveAllPath(journal.TempDir); err != nil {
+		if err := removeAllPath(journal.TempDir); err != nil {
 			return fmt.Errorf("remove incomplete staged directory: %w", err)
 		}
 	}
@@ -261,14 +262,17 @@ func ReconcileState(outputDir string) error {
 	return nil
 }
 
+// JournalPath returns the path to the staging journal file for the given output directory.
 func JournalPath(outputDir string) string {
 	return filepath.Join(filepath.Dir(outputDir), journalName)
 }
 
+// CompletionMarkerPath returns the path to the completion marker file within root.
 func CompletionMarkerPath(root string) string {
 	return filepath.Join(root, completeName)
 }
 
+// WriteCompletionMarker creates a marker file indicating that all documents have been written to root.
 func WriteCompletionMarker(root string) error {
 	if err := os.WriteFile(CompletionMarkerPath(root), []byte("complete\n"), 0o600); err != nil {
 		return fmt.Errorf("write stage completion marker: %w", err)
@@ -276,6 +280,7 @@ func WriteCompletionMarker(root string) error {
 	return nil
 }
 
+// RemoveCompletionMarker deletes the completion marker file from root.
 func RemoveCompletionMarker(root string) error {
 	if err := os.Remove(CompletionMarkerPath(root)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stage completion marker: %w", err)
@@ -283,6 +288,7 @@ func RemoveCompletionMarker(root string) error {
 	return nil
 }
 
+// WriteJournal persists the staging journal to disk for crash recovery.
 func WriteJournal(outputDir string, journal Journal) error {
 	journalPath := JournalPath(outputDir)
 	body, err := json.MarshalIndent(journal, "", "  ")
@@ -296,6 +302,7 @@ func WriteJournal(outputDir string, journal Journal) error {
 	return nil
 }
 
+// LoadJournal reads and parses a previously written staging journal, returning nil if none exists.
 func LoadJournal(outputDir string) (*Journal, error) {
 	journalPath := JournalPath(outputDir)
 	// #nosec G304 -- journalPath is anchored beside the managed output directory.
@@ -314,11 +321,22 @@ func LoadJournal(outputDir string) (*Journal, error) {
 	return &journal, nil
 }
 
+// RemoveJournal deletes the staging journal file for the given output directory.
 func RemoveJournal(outputDir string) error {
 	if err := os.Remove(JournalPath(outputDir)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stage journal: %w", err)
 	}
 	return nil
+}
+
+// SetRemoveAllFunc overrides the remove-all function for testing.
+func SetRemoveAllFunc(fn func(string) error) {
+	removeAllPath = fn
+}
+
+// ResetRemoveAllFunc restores the default remove-all function.
+func ResetRemoveAllFunc() {
+	removeAllPath = os.RemoveAll
 }
 
 func pathExists(path string) bool {

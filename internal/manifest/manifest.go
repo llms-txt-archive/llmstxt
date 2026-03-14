@@ -1,3 +1,4 @@
+// Package manifest reads and writes the JSON manifest that records sync results.
 package manifest
 
 import (
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 )
 
+// Manifest describes the result of a sync run, including all fetched documents, skipped URLs, and failures.
 type Manifest struct {
 	SourceURL            string         `json:"source_url"`
 	SourcePath           string         `json:"source_path"`
@@ -21,6 +23,7 @@ type Manifest struct {
 	Failures             []FetchFailure `json:"failures,omitempty"`
 }
 
+// Entry records the URL, local path, and integrity metadata for a single fetched document.
 type Entry struct {
 	URL            string `json:"url"`
 	Path           string `json:"path"`
@@ -30,11 +33,13 @@ type Entry struct {
 	ETag           string `json:"etag,omitempty"`
 }
 
+// SkippedEntry records a URL that was found in llms.txt but not fetched, along with the reason.
 type SkippedEntry struct {
 	URL    string `json:"url"`
 	Reason string `json:"reason"`
 }
 
+// FetchFailure records a URL that could not be fetched and the associated error.
 type FetchFailure struct {
 	URL               string `json:"url"`
 	Error             string `json:"error"`
@@ -42,6 +47,7 @@ type FetchFailure struct {
 	PreservedExisting bool   `json:"preserved_existing,omitempty"`
 }
 
+// Load reads and parses a manifest JSON file, returning nil if the path is empty or the file does not exist.
 func Load(manifestPath string) (*Manifest, error) {
 	if manifestPath == "" {
 		return nil, nil
@@ -64,7 +70,8 @@ func Load(manifestPath string) (*Manifest, error) {
 	return &manifestData, nil
 }
 
-func Write(manifestPath string, manifestData Manifest) error {
+// Write serializes manifestData as indented JSON and writes it to manifestPath.
+func Write(manifestPath string, manifestData *Manifest) error {
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
 		return fmt.Errorf("create manifest directory: %w", err)
 	}
@@ -82,6 +89,7 @@ func Write(manifestPath string, manifestData Manifest) error {
 	return nil
 }
 
+// PreviousDocumentsByURL indexes the documents of a previous manifest by URL for conditional-fetch lookups.
 func PreviousDocumentsByURL(manifestData *Manifest) map[string]Entry {
 	if manifestData == nil {
 		return nil
@@ -95,6 +103,7 @@ func PreviousDocumentsByURL(manifestData *Manifest) map[string]Entry {
 	return documents
 }
 
+// PreviousSourceEntry returns the source entry from a previous manifest, using fallbackPath if no path is recorded.
 func PreviousSourceEntry(manifestData *Manifest, fallbackPath string) Entry {
 	if manifestData == nil {
 		return Entry{Path: fallbackPath}

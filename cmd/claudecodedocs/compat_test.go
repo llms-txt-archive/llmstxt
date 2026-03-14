@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	apppkg "claudecodedocs/internal/app"
@@ -45,14 +46,10 @@ func (e *unexpectedContentError) Error() string {
 	return e.message
 }
 
-var (
-	retrySleepWithJitter = fetchpkg.RetrySleepWithJitter
-	removeAllPath        = stagepkg.RemoveAllPath
-)
+var removeAllPath = os.RemoveAll
 
 func syncTestHooks() {
-	fetchpkg.RetrySleepWithJitter = retrySleepWithJitter
-	stagepkg.RemoveAllPath = removeAllPath
+	stagepkg.SetRemoveAllFunc(removeAllPath)
 }
 
 func toCompatUnexpected(err error) error {
@@ -88,15 +85,15 @@ func toFetchUnexpected(err error) error {
 }
 
 func extractLinks(body []byte) ([]string, error) {
-	return linkspkg.ExtractLinks(body)
+	return linkspkg.Extract(body)
 }
 
 func partitionDocumentURLs(links []string) ([]string, []skippedEntry, error) {
-	return linkspkg.PartitionDocumentURLs(links)
+	return linkspkg.Partition(links)
 }
 
 func isMarkdownURL(rawURL string) (bool, error) {
-	return linkspkg.IsMarkdownURL(rawURL)
+	return linkspkg.IsMarkdown(rawURL)
 }
 
 func newURLPolicy(sourceURL string, allowedHostsCSV string) (*urlPolicy, error) {
@@ -112,15 +109,15 @@ func newHTTPClient(timeout time.Duration, urlPolicy *urlPolicy) *http.Client {
 }
 
 func relativePathForURL(rawURL string, layout string) (string, error) {
-	return linkspkg.RelativePathForURL(rawURL, layout)
+	return linkspkg.RelativePath(rawURL, layout)
 }
 
 func sourcePathForLayout(layout string) string {
-	return linkspkg.SourcePathForLayout(layout)
+	return linkspkg.SourcePath(layout)
 }
 
 func writeManifest(manifestPath string, manifestData manifest) error {
-	return manifestpkg.Write(manifestPath, manifestData)
+	return manifestpkg.Write(manifestPath, &manifestData)
 }
 
 func loadManifest(manifestPath string) (*manifest, error) {
@@ -170,7 +167,16 @@ func safeJoin(root string, relativePath string) (string, error) {
 
 func fetchDocuments(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, layout string, diagnosticsDir string, spoolDir string, snapshotRoot string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
 	syncTestHooks()
-	return fetchpkg.FetchDocuments(ctx, client, urlPolicy, layout, diagnosticsDir, spoolDir, snapshotRoot, docURLs, concurrency, previousDocuments)
+	return fetchpkg.FetchDocuments(ctx, docURLs, fetchpkg.FetchOptions{
+		Client:            client,
+		URLPolicy:         urlPolicy,
+		Layout:            layout,
+		DiagnosticsDir:    diagnosticsDir,
+		SpoolDir:          spoolDir,
+		SnapshotRoot:      snapshotRoot,
+		Concurrency:       concurrency,
+		PreviousDocuments: previousDocuments,
+	})
 }
 
 func replaceDir(tempDir string, outputDir string) error {

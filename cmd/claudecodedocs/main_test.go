@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,11 +11,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
+
+	fetchpkg "claudecodedocs/internal/fetch"
+	linkspkg "claudecodedocs/internal/links"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -75,10 +80,9 @@ func mustParseURL(t *testing.T, rawURL string) *url.URL {
 func withoutRetrySleep(t *testing.T) {
 	t.Helper()
 
-	previous := retrySleepWithJitter
-	retrySleepWithJitter = func(context.Context, int) error { return nil }
+	fetchpkg.SetRetrySleepFunc(func(context.Context, int) error { return nil })
 	t.Cleanup(func() {
-		retrySleepWithJitter = previous
+		fetchpkg.ResetRetrySleepFunc()
 	})
 }
 
@@ -196,8 +200,8 @@ func TestExtractLinksDeduplicatesAndSortsMarkdownLinks(t *testing.T) {
 		"https://code.claude.com/docs/en/quickstart.md",
 	}
 
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("extractLinks() = %#v, want %#v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("extractLinks() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -220,8 +224,8 @@ https://example.com/docs/intro.md
 		"https://example.com/docs/setup.md",
 	}
 
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("extractLinks() = %#v, want %#v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("extractLinks() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -230,8 +234,8 @@ func TestExtractLinksErrorsWhenNoURLsExist(t *testing.T) {
 	if err == nil {
 		t.Fatal("extractLinks() error = nil, want error")
 	}
-	if !strings.Contains(err.Error(), "no document URLs found") {
-		t.Fatalf("extractLinks() error = %v, want missing URLs message", err)
+	if !errors.Is(err, linkspkg.ErrNoDocumentURLs) {
+		t.Fatalf("extractLinks() error = %v, want ErrNoDocumentURLs", err)
 	}
 }
 
@@ -259,11 +263,11 @@ func TestPartitionDocumentURLsSkipsNonMarkdownLinks(t *testing.T) {
 		{URL: "https://platform.claude.com/llms-full.txt", Reason: nonMarkdownReason},
 	}
 
-	if !reflect.DeepEqual(gotDocs, wantDocs) {
-		t.Fatalf("partitionDocumentURLs() docs = %#v, want %#v", gotDocs, wantDocs)
+	if diff := cmp.Diff(wantDocs, gotDocs); diff != "" {
+		t.Fatalf("partitionDocumentURLs() docs mismatch (-want +got):\n%s", diff)
 	}
-	if !reflect.DeepEqual(gotSkipped, wantSkipped) {
-		t.Fatalf("partitionDocumentURLs() skipped = %#v, want %#v", gotSkipped, wantSkipped)
+	if diff := cmp.Diff(wantSkipped, gotSkipped); diff != "" {
+		t.Fatalf("partitionDocumentURLs() skipped mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -303,28 +307,53 @@ func TestIsMarkdownURL(t *testing.T) {
 	}
 }
 
-func TestURLPolicyDefaultSourceHostOnly(t *testing.T) {
-	policy := mustPolicy(t, "https://code.claude.com/docs/llms.txt", "")
+func TestURLPolicyValidation(t *testing.T) {
+	tests := []struct {
+		name            string
+		sourceURL       string
+		allowedHostsCSV string
+		validateURL     string
+		wantErr         bool
+	}{
+		{
+			name:        "source host allowed",
+			sourceURL:   "https://code.claude.com/docs/llms.txt",
+			validateURL: "https://code.claude.com/docs/en/overview.md",
+		},
+		{
+			name:        "http scheme rejected",
+			sourceURL:   "https://code.claude.com/docs/llms.txt",
+			validateURL: "http://code.claude.com/docs/en/overview.md",
+			wantErr:     true,
+		},
+		{
+			name:        "cross host rejected",
+			sourceURL:   "https://code.claude.com/docs/llms.txt",
+			validateURL: "https://platform.claude.com/docs/en/overview.md",
+			wantErr:     true,
+		},
+		{
+			name:        "IP literal rejected",
+			sourceURL:   "https://code.claude.com/docs/llms.txt",
+			validateURL: "https://127.0.0.1/docs/en/overview.md",
+			wantErr:     true,
+		},
+		{
+			name:            "allowed hosts override",
+			sourceURL:       "https://code.claude.com/docs/llms.txt",
+			allowedHostsCSV: "platform.claude.com",
+			validateURL:     "https://platform.claude.com/docs/en/overview.md",
+		},
+	}
 
-	if err := policy.Validate("https://code.claude.com/docs/en/overview.md"); err != nil {
-		t.Fatalf("policy.Validate(source host) error = %v", err)
-	}
-	if err := policy.Validate("http://code.claude.com/docs/en/overview.md"); err == nil {
-		t.Fatal("policy.Validate(http) error = nil, want rejection")
-	}
-	if err := policy.Validate("https://platform.claude.com/docs/en/overview.md"); err == nil {
-		t.Fatal("policy.Validate(cross host) error = nil, want rejection")
-	}
-	if err := policy.Validate("https://127.0.0.1/docs/en/overview.md"); err == nil {
-		t.Fatal("policy.Validate(IP literal) error = nil, want rejection")
-	}
-}
-
-func TestURLPolicyAllowedHostsOverride(t *testing.T) {
-	policy := mustPolicy(t, "https://code.claude.com/docs/llms.txt", "platform.claude.com")
-
-	if err := policy.Validate("https://platform.claude.com/docs/en/overview.md"); err != nil {
-		t.Fatalf("policy.Validate(allowed host) error = %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := mustPolicy(t, tt.sourceURL, tt.allowedHostsCSV)
+			err := policy.Validate(tt.validateURL)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("policy.Validate(%q) error = %v, wantErr %v", tt.validateURL, err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -461,8 +490,8 @@ func TestWriteManifestAndLoadManifestRoundTrip(t *testing.T) {
 		t.Fatalf("loadManifest() error = %v", err)
 	}
 
-	if !reflect.DeepEqual(*got, want) {
-		t.Fatalf("loadManifest() = %#v, want %#v", *got, want)
+	if diff := cmp.Diff(want, *got); diff != "" {
+		t.Fatalf("loadManifest() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -982,8 +1011,8 @@ func TestPreservePreviousDocumentRequiresPreviousSnapshotEntry(t *testing.T) {
 	if err == nil {
 		t.Fatal("preservePreviousDocument() error = nil, want error")
 	}
-	if !strings.Contains(err.Error(), "no previous snapshot entry") {
-		t.Fatalf("preservePreviousDocument() error = %v, want missing previous snapshot entry", err)
+	if !errors.Is(err, fetchpkg.ErrNoPreviousEntry) {
+		t.Fatalf("preservePreviousDocument() error = %v, want ErrNoPreviousEntry", err)
 	}
 }
 
@@ -1371,9 +1400,9 @@ func TestReplaceDirWarnsWhenBackupCleanupFails(t *testing.T) {
 		}
 		return os.RemoveAll(path)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		removeAllPath = previousRemoveAll
-	}()
+	})
 
 	if err := replaceDir(tempDir, outputDir); err != nil {
 		t.Fatalf("replaceDir() error = %v", err)

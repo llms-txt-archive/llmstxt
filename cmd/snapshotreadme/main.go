@@ -1,3 +1,4 @@
+// Package main implements the snapshotreadme CLI.
 package main
 
 import (
@@ -73,20 +74,23 @@ func parseFlags() config {
 	flag.StringVar(&cfg.releasesPath, "releases-json", "", "path to release metadata JSON")
 	flag.Parse()
 
-	required := map[string]string{
-		"-template":       cfg.templatePath,
-		"-out":            cfg.outputPath,
-		"-title":          cfg.title,
-		"-site-name":      cfg.siteName,
-		"-site-url":       cfg.siteURL,
-		"-source-url":     cfg.sourceURL,
-		"-schedule-label": cfg.scheduleLabel,
-		"-releases-json":  cfg.releasesPath,
+	type requiredFlag struct {
+		name  string
+		value string
 	}
-
-	for flagName, value := range required {
-		if value == "" {
-			fmt.Fprintf(os.Stderr, "missing required %s\n", flagName)
+	required := []requiredFlag{
+		{"-template", cfg.templatePath},
+		{"-out", cfg.outputPath},
+		{"-title", cfg.title},
+		{"-site-name", cfg.siteName},
+		{"-site-url", cfg.siteURL},
+		{"-source-url", cfg.sourceURL},
+		{"-schedule-label", cfg.scheduleLabel},
+		{"-releases-json", cfg.releasesPath},
+	}
+	for _, f := range required {
+		if f.value == "" {
+			fmt.Fprintf(os.Stderr, "missing required %s\n", f.name)
 			os.Exit(1)
 		}
 	}

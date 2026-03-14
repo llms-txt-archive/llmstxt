@@ -43,16 +43,16 @@ func TestParseFlagsSuccess(t *testing.T) {
 
 	cfg := parseFlags()
 	if cfg.templatePath != "/tmp/template.md" {
-		t.Fatalf("parseFlags() template = %q", cfg.templatePath)
+		t.Errorf("parseFlags() template = %q", cfg.templatePath)
 	}
 	if cfg.outputPath != "/tmp/README.md" {
-		t.Fatalf("parseFlags() out = %q", cfg.outputPath)
+		t.Errorf("parseFlags() out = %q", cfg.outputPath)
 	}
 	if cfg.documentCount != 42 {
-		t.Fatalf("parseFlags() document_count = %d", cfg.documentCount)
+		t.Errorf("parseFlags() document_count = %d", cfg.documentCount)
 	}
 	if cfg.skippedCount != 3 {
-		t.Fatalf("parseFlags() skipped_count = %d", cfg.skippedCount)
+		t.Errorf("parseFlags() skipped_count = %d", cfg.skippedCount)
 	}
 }
 

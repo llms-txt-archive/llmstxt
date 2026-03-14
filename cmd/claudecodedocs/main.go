@@ -1,8 +1,10 @@
+// Package main implements the claudecodedocs CLI.
 package main
 
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -29,7 +31,8 @@ func main() {
 	defer stop()
 
 	if err := runApp(ctx, cfg); err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 
@@ -48,24 +51,29 @@ func parseFlags() app.Config {
 	flag.Parse()
 
 	if cfg.SourceURL == "" {
-		log.Fatal("missing required -source")
+		fmt.Fprintln(os.Stderr, "missing required -source")
+		os.Exit(1)
 	}
 	if cfg.OutputDir == "" {
-		log.Fatal("missing required -out")
+		fmt.Fprintln(os.Stderr, "missing required -out")
+		os.Exit(1)
 	}
 	if cfg.ManifestOut == "" {
-		log.Fatal("missing required -manifest-out")
+		fmt.Fprintln(os.Stderr, "missing required -manifest-out")
+		os.Exit(1)
 	}
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 1
 	}
 	if cfg.Layout != links.LayoutRoot && cfg.Layout != links.LayoutNested {
-		log.Fatalf("invalid -layout %q (expected %q or %q)", cfg.Layout, links.LayoutRoot, links.LayoutNested)
+		fmt.Fprintf(os.Stderr, "invalid -layout %q (expected %q or %q)\n", cfg.Layout, links.LayoutRoot, links.LayoutNested)
+		os.Exit(1)
 	}
 
 	wd, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("resolve current working directory: %v", err)
+		fmt.Fprintf(os.Stderr, "resolve current working directory: %v\n", err)
+		os.Exit(1)
 	}
 	cfg.SnapshotRoot = wd
 

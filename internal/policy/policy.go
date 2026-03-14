@@ -1,3 +1,4 @@
+// Package policy enforces URL allowlisting and SSRF protection for outbound HTTP requests.
 package policy
 
 import (
@@ -24,10 +25,12 @@ var blockedIPPfx = []netip.Prefix{
 	netip.MustParsePrefix("2001:db8::/32"),
 }
 
+// URLPolicy enforces host-based allowlisting for outbound HTTP requests.
 type URLPolicy struct {
 	allowedHosts map[string]struct{}
 }
 
+// NewURLPolicy creates a URLPolicy that allows the source URL's host plus any additional comma-separated hosts.
 func NewURLPolicy(sourceURL string, allowedHostsCSV string) (*URLPolicy, error) {
 	parsedSource, err := url.Parse(sourceURL)
 	if err != nil {
@@ -71,6 +74,7 @@ func normalizeHost(host string) (string, error) {
 	return host, nil
 }
 
+// Validate parses rawURL and checks that its scheme and host are allowed.
 func (p *URLPolicy) Validate(rawURL string) error {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -79,6 +83,7 @@ func (p *URLPolicy) Validate(rawURL string) error {
 	return p.ValidateURL(parsedURL)
 }
 
+// ValidateURL checks that parsedURL uses HTTPS and targets an allowed host.
 func (p *URLPolicy) ValidateURL(parsedURL *url.URL) error {
 	if parsedURL == nil {
 		return errors.New("missing URL")
@@ -97,6 +102,7 @@ func (p *URLPolicy) ValidateURL(parsedURL *url.URL) error {
 	return nil
 }
 
+// ValidateResolvedHost resolves the host via DNS and returns dial addresses after validating each resolved IP.
 func (p *URLPolicy) ValidateResolvedHost(ctx context.Context, host string) ([]string, error) {
 	normalizedHost, err := normalizeHost(host)
 	if err != nil {
@@ -125,6 +131,7 @@ func (p *URLPolicy) ValidateResolvedHost(ctx context.Context, host string) ([]st
 	return dialAddrs, nil
 }
 
+// ValidateResolvedIP returns an error if ip is a loopback, private, link-local, or otherwise blocked address.
 func ValidateResolvedIP(ip net.IP) error {
 	addr, ok := netip.AddrFromSlice(ip)
 	if !ok {
@@ -132,7 +139,12 @@ func ValidateResolvedIP(ip net.IP) error {
 	}
 	addr = addr.Unmap()
 
-	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+	if addr.IsLoopback() ||
+		addr.IsPrivate() ||
+		addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() ||
+		addr.IsMulticast() ||
+		addr.IsUnspecified() {
 		return fmt.Errorf("resolved to blocked IP %s", addr)
 	}
 	for _, prefix := range blockedIPPfx {
@@ -143,8 +155,12 @@ func ValidateResolvedIP(ip net.IP) error {
 	return nil
 }
 
+// NewHTTPClient returns an http.Client that validates every dial and redirect against the given URLPolicy.
 func NewHTTPClient(timeout time.Duration, urlPolicy *URLPolicy) *http.Client {
-	baseTransport, _ := http.DefaultTransport.(*http.Transport)
+	baseTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		baseTransport = &http.Transport{}
+	}
 	transport := baseTransport.Clone()
 	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
 

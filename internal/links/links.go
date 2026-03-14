@@ -1,8 +1,10 @@
+// Package links extracts, classifies, and maps URLs found in an llms.txt document.
 package links
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -15,15 +17,22 @@ import (
 )
 
 const (
-	LayoutRoot        = "root"
-	LayoutNested      = "nested"
+	// LayoutRoot places fetched documents at the top level of the output directory.
+	LayoutRoot = "root"
+	// LayoutNested organizes fetched documents into subdirectories by host.
+	LayoutNested = "nested"
+	// NonMarkdownReason is the skip reason recorded for URLs that do not end in .md.
 	NonMarkdownReason = "non_markdown"
 )
+
+// ErrNoDocumentURLs is returned when an llms.txt body contains no extractable URLs.
+var ErrNoDocumentURLs = errors.New("no document URLs found in llms.txt")
 
 var markdownLinkPattern = regexp.MustCompile(`\((https?://[^)\s]+)\)`)
 var plainURLLinePattern = regexp.MustCompile(`^(?:[-*+]\s+|\d+\.\s+)?(https?://\S+)$`)
 
-func ExtractLinks(body []byte) ([]string, error) {
+// Extract parses an llms.txt body and returns all unique HTTP(S) URLs found in it.
+func Extract(body []byte) ([]string, error) {
 	matches := markdownLinkPattern.FindAllSubmatch(body, -1)
 	set := make(map[string]struct{})
 
@@ -58,18 +67,19 @@ func ExtractLinks(body []byte) ([]string, error) {
 	}
 	sort.Strings(links)
 	if len(links) == 0 {
-		return nil, fmt.Errorf("no document URLs found in llms.txt")
+		return nil, ErrNoDocumentURLs
 	}
 
 	return links, nil
 }
 
-func PartitionDocumentURLs(links []string) ([]string, []manifest.SkippedEntry, error) {
+// Partition splits URLs into markdown document URLs and skipped non-markdown entries.
+func Partition(links []string) ([]string, []manifest.SkippedEntry, error) {
 	docURLs := make([]string, 0, len(links))
-	skipped := make([]manifest.SkippedEntry, 0)
+	var skipped []manifest.SkippedEntry
 
 	for _, link := range links {
-		isMarkdown, err := IsMarkdownURL(link)
+		isMarkdown, err := IsMarkdown(link)
 		if err != nil {
 			return nil, nil, fmt.Errorf("inspect link %q: %w", link, err)
 		}
@@ -85,7 +95,8 @@ func PartitionDocumentURLs(links []string) ([]string, []manifest.SkippedEntry, e
 	return docURLs, skipped, nil
 }
 
-func IsMarkdownURL(rawURL string) (bool, error) {
+// IsMarkdown reports whether rawURL has a .md file extension.
+func IsMarkdown(rawURL string) (bool, error) {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return false, err
@@ -97,14 +108,16 @@ func IsMarkdownURL(rawURL string) (bool, error) {
 	return strings.EqualFold(path.Ext(parsedURL.Path), ".md"), nil
 }
 
-func SourcePathForLayout(layout string) string {
+// SourcePath returns the relative file path for the llms.txt source document under the given layout.
+func SourcePath(layout string) string {
 	if layout == LayoutRoot {
 		return "llms.txt"
 	}
 	return filepath.ToSlash(filepath.Join("source", "llms.txt"))
 }
 
-func RelativePathForURL(rawURL string, layout string) (string, error) {
+// RelativePath maps a document URL to a filesystem-relative path under the given layout.
+func RelativePath(rawURL string, layout string) (string, error) {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return "", err
