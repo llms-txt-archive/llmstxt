@@ -1056,7 +1056,7 @@ func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 
-	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		return testResponse(http.StatusOK, map[string]string{
 			"Content-Type": "text/html; charset=utf-8",
 		}, "<!DOCTYPE html><html><body>not found</body></html>"), nil
@@ -1116,12 +1116,12 @@ func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 
-	failingClient := newTestClient(func(req *http.Request) (*http.Response, error) {
+	failingClient := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		return testResponse(http.StatusOK, map[string]string{
 			"Content-Type": "text/html; charset=utf-8",
 		}, "<!DOCTYPE html><html><body>persistent failure</body></html>"), nil
 	})
-	successClient := newTestClient(func(req *http.Request) (*http.Response, error) {
+	successClient := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		return testResponse(http.StatusOK, map[string]string{
 			"Content-Type": "text/markdown; charset=utf-8",
 		}, "# Fresh snapshot\n"), nil
@@ -1546,7 +1546,7 @@ func TestRecursiveDiscoveryCyclePrevention(t *testing.T) {
 func TestRecursiveDiscoveryCrossHostBlocked(t *testing.T) {
 	rootBody := "- [Cross](https://other.com/llms.txt)\n- [Doc](https://example.com/a.md)\n"
 
-	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		return testResponse(404, nil, "not found"), nil
 	})
 
@@ -1702,7 +1702,7 @@ func TestRecursiveDiscoveryDocDedup(t *testing.T) {
 func TestRecursiveDiscoveryContextCancellation(t *testing.T) {
 	rootBody := "- [Doc](https://example.com/a.md)\n- [Nested](https://example.com/api/llms.txt)\n"
 
-	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		return testResponse(200, map[string]string{"Content-Type": "text/plain"}, "- [Doc](https://example.com/b.md)\n"), nil
 	})
 
@@ -1741,7 +1741,7 @@ func TestRecursiveDiscoveryIndexCap(t *testing.T) {
 	}
 	rootBody := strings.Join(rootLinks, "\n") + "\n"
 
-	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
 		return testResponse(200, map[string]string{"Content-Type": "text/plain"}, "- [Doc](https://example.com/doc.md)\n"), nil
 	})
 

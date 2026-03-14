@@ -50,7 +50,9 @@ func TestHashBytes(t *testing.T) {
 
 func TestCleanupSpoolFile(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "spool.tmp")
-	os.WriteFile(f, []byte("data"), 0o600)
+	if err := os.WriteFile(f, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	CleanupSpoolFile(f)
 	if _, err := os.Stat(f); !os.IsNotExist(err) {
 		t.Fatal("CleanupSpoolFile() did not remove file")

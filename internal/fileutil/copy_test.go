@@ -9,7 +9,9 @@ import (
 func TestCopyFile(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src.txt")
 	dst := filepath.Join(t.TempDir(), "dst.txt")
-	os.WriteFile(src, []byte("hello"), 0o600)
+	if err := os.WriteFile(src, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := CopyFile(src, dst); err != nil {
 		t.Fatalf("CopyFile() error = %v", err)
@@ -33,7 +35,9 @@ func TestCopyFileSourceNotFound(t *testing.T) {
 
 func TestCopyFileCleansUpOnFailure(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src.txt")
-	os.WriteFile(src, []byte("data"), 0o600)
+	if err := os.WriteFile(src, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	dst := filepath.Join(t.TempDir(), "nodir", "sub", "dst.txt")
 	err := CopyFile(src, dst)
 	if err == nil {
