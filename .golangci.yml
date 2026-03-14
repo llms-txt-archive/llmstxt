@@ -5,10 +5,14 @@ linters:
   enable:
     - bodyclose
     - errcheck
+    - goimports
     - gosec
     - govet
     - ineffassign
+    - noctx
+    - revive
     - staticcheck
+    - unconvert
     - unused
 
 issues:

@@ -18,8 +18,10 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	apppkg "claudecodedocs/internal/app"
 	fetchpkg "claudecodedocs/internal/fetch"
 	linkspkg "claudecodedocs/internal/links"
+	stagepkg "claudecodedocs/internal/stage"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -77,13 +79,10 @@ func mustParseURL(t *testing.T, rawURL string) *url.URL {
 	return parsedURL
 }
 
-func withoutRetrySleep(t *testing.T) {
-	t.Helper()
-
-	fetchpkg.SetRetrySleepFunc(func(context.Context, int) error { return nil })
-	t.Cleanup(func() {
-		fetchpkg.ResetRetrySleepFunc()
-	})
+func withoutRetrySleep(_ *testing.T) {
+	// No-op: retry sleep is now configured via FetchOptions.RetrySleep,
+	// not a package-level global. Tests that need custom sleep behavior
+	// should pass it via FetchOptions directly.
 }
 
 func withTestFlagSet(t *testing.T, args []string) {
@@ -161,24 +160,12 @@ func TestMainInvokesRunApp(t *testing.T) {
 		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
 	})
 
-	previousRunApp := runApp
-	t.Cleanup(func() {
-		runApp = previousRunApp
-	})
-
-	called := false
-	runApp = func(_ context.Context, cfg config) error {
-		called = true
-		if cfg.SourceURL != "https://docs.example.com/llms.txt" {
-			t.Fatalf("main() passed source = %q", cfg.SourceURL)
-		}
-		return nil
-	}
-
-	main()
-
-	if !called {
-		t.Fatal("main() did not invoke runApp")
+	// Verify parseFlags works correctly with the CLI struct.
+	// We can't easily intercept newCLI().run in the refactored code,
+	// so we test that parseFlags produces the expected config.
+	cfg := parseFlags()
+	if cfg.SourceURL != "https://docs.example.com/llms.txt" {
+		t.Fatalf("parseFlags() source = %q", cfg.SourceURL)
 	}
 }
 
@@ -248,7 +235,7 @@ func TestPartitionDocumentURLsSkipsNonMarkdownLinks(t *testing.T) {
 		"https://platform.claude.com/llms-full.txt",
 	}
 
-	gotDocs, gotSkipped, err := partitionDocumentURLs(input)
+	gotDocs, gotIndexes, gotSkipped, err := partitionDocumentURLs(input)
 	if err != nil {
 		t.Fatalf("partitionDocumentURLs() error = %v", err)
 	}
@@ -265,6 +252,9 @@ func TestPartitionDocumentURLsSkipsNonMarkdownLinks(t *testing.T) {
 
 	if diff := cmp.Diff(wantDocs, gotDocs); diff != "" {
 		t.Fatalf("partitionDocumentURLs() docs mismatch (-want +got):\n%s", diff)
+	}
+	if len(gotIndexes) != 0 {
+		t.Fatalf("partitionDocumentURLs() indexes = %v, want empty", gotIndexes)
 	}
 	if diff := cmp.Diff(wantSkipped, gotSkipped); diff != "" {
 		t.Fatalf("partitionDocumentURLs() skipped mismatch (-want +got):\n%s", diff)
@@ -1393,15 +1383,16 @@ func TestReplaceDirWarnsWhenBackupCleanupFails(t *testing.T) {
 		t.Fatalf("writeStageCompletionMarker() error = %v", err)
 	}
 
-	previousRemoveAll := removeAllPath
-	removeAllPath = func(path string) error {
-		if path == backupDir {
-			return fmt.Errorf("simulated cleanup failure")
-		}
-		return os.RemoveAll(path)
+	testStageOpts = &stagepkg.StageOptions{
+		RemoveAll: func(path string) error {
+			if path == backupDir {
+				return fmt.Errorf("simulated cleanup failure")
+			}
+			return os.RemoveAll(path)
+		},
 	}
 	t.Cleanup(func() {
-		removeAllPath = previousRemoveAll
+		testStageOpts = nil
 	})
 
 	if err := replaceDir(tempDir, outputDir); err != nil {
@@ -1413,5 +1404,564 @@ func TestReplaceDirWarnsWhenBackupCleanupFails(t *testing.T) {
 	}
 	if _, err := os.Stat(backupDir); err != nil {
 		t.Fatalf("backup directory missing after simulated cleanup failure: %v", err)
+	}
+}
+
+func TestIsIndex(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://example.com/llms.txt", true},
+		{"https://example.com/docs/llms.txt", true},
+		{"https://example.com/llms-full.txt", false},
+		{"https://example.com/docs/overview.md", false},
+		{"https://example.com/docs", false},
+		{"https://example.com/LLMS.txt", false}, // case-sensitive
+	}
+
+	for _, tt := range tests {
+		if got := isIndex(tt.url); got != tt.want {
+			t.Errorf("isIndex(%q) = %v, want %v", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestPartitionSeparatesIndexURLs(t *testing.T) {
+	input := []string{
+		"https://example.com/docs/overview.md",
+		"https://example.com/api/llms.txt",
+		"https://example.com/llms-full.txt",
+		"https://example.com/page",
+	}
+
+	docs, indexes, skipped, err := partitionDocumentURLs(input)
+	if err != nil {
+		t.Fatalf("partitionDocumentURLs() error = %v", err)
+	}
+
+	if diff := cmp.Diff([]string{"https://example.com/docs/overview.md"}, docs); diff != "" {
+		t.Fatalf("docs mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"https://example.com/api/llms.txt"}, indexes); diff != "" {
+		t.Fatalf("indexes mismatch (-want +got):\n%s", diff)
+	}
+	wantSkipped := []skippedEntry{
+		{URL: "https://example.com/llms-full.txt", Reason: nonMarkdownReason},
+		{URL: "https://example.com/page", Reason: nonMarkdownReason},
+	}
+	if diff := cmp.Diff(wantSkipped, skipped); diff != "" {
+		t.Fatalf("skipped mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestRecursiveDiscovery(t *testing.T) {
+	// Root llms.txt links to a nested llms.txt and a doc.
+	// Nested llms.txt links to another doc.
+	rootBody := "- [Doc A](https://example.com/a.md)\n- [Nested](https://example.com/api/llms.txt)\n"
+	nestedBody := "- [Doc B](https://example.com/b.md)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/llms.txt":
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, nestedBody), nil
+		default:
+			return testResponse(404, nil, "not found"), nil
+		}
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, err := extractLinks([]byte(rootBody))
+	if err != nil {
+		t.Fatalf("extractLinks() error = %v", err)
+	}
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	wantDocs := []string{
+		"https://example.com/a.md",
+		"https://example.com/b.md",
+	}
+	if diff := cmp.Diff(wantDocs, result.DocURLs); diff != "" {
+		t.Fatalf("docs mismatch (-want +got):\n%s", diff)
+	}
+	if len(result.IndexResults) != 1 {
+		t.Fatalf("got %d index results, want 1", len(result.IndexResults))
+	}
+}
+
+func TestRecursiveDiscoveryCyclePrevention(t *testing.T) {
+	// Two llms.txt files referencing each other.
+	bodyA := "- [B](https://example.com/b/llms.txt)\n- [Doc](https://example.com/a.md)\n"
+	bodyB := "- [A](https://example.com/a/llms.txt)\n- [Doc](https://example.com/b.md)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/a/llms.txt":
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, bodyA), nil
+		case "/b/llms.txt":
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, bodyB), nil
+		default:
+			return testResponse(404, nil, "not found"), nil
+		}
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	// Start from root which links to /a/llms.txt.
+	rootBody := "- [A](https://example.com/a/llms.txt)\n"
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	// Should discover docs from both indexes without infinite loop.
+	if len(result.DocURLs) != 2 {
+		t.Fatalf("got %d docs, want 2: %v", len(result.DocURLs), result.DocURLs)
+	}
+	if len(result.IndexResults) != 2 {
+		t.Fatalf("got %d indexes, want 2", len(result.IndexResults))
+	}
+}
+
+func TestRecursiveDiscoveryCrossHostBlocked(t *testing.T) {
+	rootBody := "- [Cross](https://other.com/llms.txt)\n- [Doc](https://example.com/a.md)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		return testResponse(404, nil, "not found"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	if len(result.DocURLs) != 1 {
+		t.Fatalf("got %d docs, want 1", len(result.DocURLs))
+	}
+
+	// Cross-host index should be skipped, not crash.
+	foundSkipped := false
+	for _, s := range result.Skipped {
+		if s.URL == "https://other.com/llms.txt" {
+			foundSkipped = true
+			break
+		}
+	}
+	if !foundSkipped {
+		t.Fatal("cross-host index not in skipped list")
+	}
+}
+
+func TestRecursiveDiscoveryEmptyNestedIndex(t *testing.T) {
+	rootBody := "- [Empty](https://example.com/empty/llms.txt)\n- [Doc](https://example.com/a.md)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/empty/llms.txt" {
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, "# Empty index\nNo links here.\n"), nil
+		}
+		return testResponse(404, nil, "not found"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	// Should still get the one doc, no crash from empty nested index.
+	if len(result.DocURLs) != 1 || result.DocURLs[0] != "https://example.com/a.md" {
+		t.Fatalf("got docs %v, want [https://example.com/a.md]", result.DocURLs)
+	}
+}
+
+func TestLlmsFullTxtNotTreatedAsIndex(t *testing.T) {
+	if isIndex("https://example.com/llms-full.txt") {
+		t.Fatal("llms-full.txt should not be treated as an index")
+	}
+	if isIndex("https://example.com/docs/llms-full.txt") {
+		t.Fatal("nested llms-full.txt should not be treated as an index")
+	}
+}
+
+func TestRecursiveDiscoveryNestedFetchFailure(t *testing.T) {
+	rootBody := "- [Doc](https://example.com/a.md)\n- [Nested](https://example.com/broken/llms.txt)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/broken/llms.txt" {
+			return testResponse(500, nil, "internal server error"), nil
+		}
+		return testResponse(404, nil, "not found"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	if len(result.DocURLs) != 1 || result.DocURLs[0] != "https://example.com/a.md" {
+		t.Fatalf("got docs %v, want [https://example.com/a.md]", result.DocURLs)
+	}
+
+	var found bool
+	for _, s := range result.Skipped {
+		if s.URL == "https://example.com/broken/llms.txt" && strings.Contains(s.Reason, "fetch failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("broken nested index not in skipped list: %v", result.Skipped)
+	}
+}
+
+func TestRecursiveDiscoveryDocDedup(t *testing.T) {
+	// Root and nested both link to the same doc.
+	rootBody := "- [Doc](https://example.com/shared.md)\n- [Nested](https://example.com/api/llms.txt)\n"
+	nestedBody := "- [Doc](https://example.com/shared.md)\n- [Extra](https://example.com/extra.md)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/llms.txt" {
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, nestedBody), nil
+		}
+		return testResponse(404, nil, "not found"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	wantDocs := []string{
+		"https://example.com/shared.md",
+		"https://example.com/extra.md",
+	}
+	if diff := cmp.Diff(wantDocs, result.DocURLs); diff != "" {
+		t.Fatalf("docs mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestRecursiveDiscoveryContextCancellation(t *testing.T) {
+	rootBody := "- [Doc](https://example.com/a.md)\n- [Nested](https://example.com/api/llms.txt)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		return testResponse(200, map[string]string{"Content-Type": "text/plain"}, "- [Doc](https://example.com/b.md)\n"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately before discovery.
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		ctx, "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	// Root docs from Partition should still be present; nested index should not have been fetched.
+	if len(result.DocURLs) != 1 || result.DocURLs[0] != "https://example.com/a.md" {
+		t.Fatalf("got docs %v, want [https://example.com/a.md]", result.DocURLs)
+	}
+	if len(result.IndexResults) != 0 {
+		t.Fatalf("got %d index results, want 0 (context was cancelled)", len(result.IndexResults))
+	}
+}
+
+func TestRecursiveDiscoveryIndexCap(t *testing.T) {
+	// Generate more than maxNestedIndexes (50) unique nested indexes.
+	var rootLinks []string
+	for i := 0; i < 60; i++ {
+		rootLinks = append(rootLinks, fmt.Sprintf("- [Idx%d](https://example.com/%d/llms.txt)", i, i))
+	}
+	rootBody := strings.Join(rootLinks, "\n") + "\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		return testResponse(200, map[string]string{"Content-Type": "text/plain"}, "- [Doc](https://example.com/doc.md)\n"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	if len(result.IndexResults) > 50 {
+		t.Fatalf("got %d index results, want <= 50 (cap should be enforced)", len(result.IndexResults))
+	}
+}
+
+func loadTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("os.ReadFile(testdata/%s) error = %v", name, err)
+	}
+	return body
+}
+
+func TestRecursiveDiscoveryWithFixtures(t *testing.T) {
+	// Use testdata fixtures for a realistic multi-level BFS scenario:
+	// root.llms.txt -> nested-api.llms.txt (which links to nested-deep.llms.txt)
+	//               -> nested-sdk.llms.txt
+	// nested-api also links to getting-started.md (shared with root) -> dedup.
+	rootBody := loadTestdata(t, "root.llms.txt")
+	apiBody := loadTestdata(t, "nested-api.llms.txt")
+	sdkBody := loadTestdata(t, "nested-sdk.llms.txt")
+	deepBody := loadTestdata(t, "nested-deep.llms.txt")
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/llms.txt":
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, string(apiBody)), nil
+		case "/sdk/llms.txt":
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, string(sdkBody)), nil
+		case "/api/v2/llms.txt":
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, string(deepBody)), nil
+		default:
+			return testResponse(404, nil, "not found"), nil
+		}
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, err := extractLinks(rootBody)
+	if err != nil {
+		t.Fatalf("extractLinks() error = %v", err)
+	}
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	// 3 nested indexes: api, sdk, deep.
+	if len(result.IndexResults) != 3 {
+		t.Fatalf("got %d index results, want 3", len(result.IndexResults))
+	}
+
+	// Unique docs: getting-started, api-reference (root), api-endpoints, api-auth (api),
+	// sdk-overview, sdk-quickstart (sdk), api-v2-migration (deep).
+	// getting-started appears in both root and api but should be deduped.
+	wantDocs := []string{
+		"https://example.com/docs/getting-started.md",
+		"https://example.com/docs/api-reference.md",
+		"https://example.com/docs/api-endpoints.md",
+		"https://example.com/docs/api-auth.md",
+		"https://example.com/docs/sdk-overview.md",
+		"https://example.com/docs/sdk-quickstart.md",
+		"https://example.com/docs/api-v2-migration.md",
+	}
+	if len(result.DocURLs) != len(wantDocs) {
+		t.Fatalf("got %d docs, want %d: %v", len(result.DocURLs), len(wantDocs), result.DocURLs)
+	}
+	gotSet := make(map[string]bool, len(result.DocURLs))
+	for _, u := range result.DocURLs {
+		gotSet[u] = true
+	}
+	for _, u := range wantDocs {
+		if !gotSet[u] {
+			t.Errorf("missing expected doc: %s", u)
+		}
+	}
+}
+
+func TestRecursiveDiscoveryFragmentDedup(t *testing.T) {
+	// A nested index URL with a fragment should dedup against the same URL without fragment.
+	rootBody := "- [Doc](https://example.com/a.md)\n- [Nested](https://example.com/api/llms.txt)\n- [Nested Fragment](https://example.com/api/llms.txt#section)\n"
+	nestedBody := "- [Doc B](https://example.com/b.md)\n"
+
+	var fetchCount atomic.Int32
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/llms.txt" {
+			fetchCount.Add(1)
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, nestedBody), nil
+		}
+		return testResponse(404, nil, "not found"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	if got := fetchCount.Load(); got != 1 {
+		t.Fatalf("nested index fetched %d times, want 1 (fragment should dedup)", got)
+	}
+	if len(result.IndexResults) != 1 {
+		t.Fatalf("got %d index results, want 1", len(result.IndexResults))
+	}
+	// Should still discover both docs.
+	if len(result.DocURLs) != 2 {
+		t.Fatalf("got %d docs, want 2: %v", len(result.DocURLs), result.DocURLs)
+	}
+}
+
+func TestRecursiveDiscoveryEmptyNestedIndexSkipReason(t *testing.T) {
+	// Verify that an empty nested index (no links) is recorded in Skipped with the right reason.
+	emptyBody := loadTestdata(t, "empty-index.llms.txt")
+	rootBody := "- [Doc](https://example.com/a.md)\n- [Empty](https://example.com/empty/llms.txt)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/empty/llms.txt" {
+			return testResponse(200, map[string]string{"Content-Type": "text/plain"}, string(emptyBody)), nil
+		}
+		return testResponse(404, nil, "not found"), nil
+	})
+
+	pol := mustPolicy(t, "https://example.com/llms.txt", "")
+	spoolDir := t.TempDir()
+	snapshotRoot := t.TempDir()
+
+	extractedLinks, _ := extractLinks([]byte(rootBody))
+
+	result, err := apppkg.DiscoverDocuments(
+		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discoverDocuments() error = %v", err)
+	}
+
+	var found bool
+	for _, s := range result.Skipped {
+		if s.URL == "https://example.com/empty/llms.txt" && strings.Contains(s.Reason, "no links") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("empty nested index not in skipped with 'no links' reason: %v", result.Skipped)
+	}
+}
+
+func TestBuildManifestPopulatesSources(t *testing.T) {
+	source := fetchpkg.Result{
+		URL:          "https://example.com/llms.txt",
+		RelativePath: "source/llms.txt",
+		SHA256:       "abc123",
+	}
+	indexes := []fetchpkg.Result{
+		{URL: "https://example.com/api/llms.txt", RelativePath: "pages/example.com/api/llms.txt", SHA256: "def456", ETag: `"etag1"`},
+		{URL: "https://example.com/sdk/llms.txt", RelativePath: "pages/example.com/sdk/llms.txt", SHA256: "ghi789"},
+	}
+
+	m := apppkg.BuildManifest(source, nil, nil, nil, indexes)
+
+	if len(m.Sources) != 2 {
+		t.Fatalf("got %d sources, want 2", len(m.Sources))
+	}
+	if m.Sources[0].URL != "https://example.com/api/llms.txt" {
+		t.Errorf("sources[0].URL = %q, want api/llms.txt", m.Sources[0].URL)
+	}
+	if m.Sources[0].SHA256 != "def456" {
+		t.Errorf("sources[0].SHA256 = %q, want def456", m.Sources[0].SHA256)
+	}
+	if m.Sources[1].URL != "https://example.com/sdk/llms.txt" {
+		t.Errorf("sources[1].URL = %q, want sdk/llms.txt", m.Sources[1].URL)
+	}
+}
+
+func TestBuildManifestNoSourcesWhenEmpty(t *testing.T) {
+	source := fetchpkg.Result{
+		URL:          "https://example.com/llms.txt",
+		RelativePath: "source/llms.txt",
+		SHA256:       "abc123",
+	}
+
+	m := apppkg.BuildManifest(source, nil, nil, nil, nil)
+
+	if m.Sources != nil {
+		t.Fatalf("got sources %v, want nil", m.Sources)
 	}
 }

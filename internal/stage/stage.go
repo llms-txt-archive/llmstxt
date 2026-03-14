@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
 
 	"claudecodedocs/internal/fetch"
+	"claudecodedocs/internal/fileutil"
 )
 
 const (
@@ -18,7 +18,18 @@ const (
 	completeName = ".claudecodedocs-complete"
 )
 
-var removeAllPath = os.RemoveAll
+// StageOptions configures staging behavior. A nil *StageOptions is valid and uses defaults.
+type StageOptions struct {
+	// RemoveAll overrides the directory removal function. Defaults to os.RemoveAll if nil.
+	RemoveAll func(string) error
+}
+
+func (o *StageOptions) removeAll() func(string) error {
+	if o != nil && o.RemoveAll != nil {
+		return o.RemoveAll
+	}
+	return os.RemoveAll
+}
 
 // Journal records the in-progress state of an atomic directory replacement for crash recovery.
 type Journal struct {
@@ -29,12 +40,13 @@ type Journal struct {
 }
 
 // StageOutput writes fetched documents to a temporary directory and atomically swaps it into outputDir.
-func StageOutput(outputDir string, source fetch.Result, documents []fetch.Result) error {
+func StageOutput(outputDir string, source fetch.Result, documents []fetch.Result, opts *StageOptions) error {
 	parentDir := filepath.Dir(outputDir)
 	if err := os.MkdirAll(parentDir, 0o750); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
 	}
-	if err := ReconcileState(outputDir); err != nil {
+	removeAll := opts.removeAll()
+	if err := ReconcileState(outputDir, opts); err != nil {
 		return err
 	}
 
@@ -46,7 +58,7 @@ func StageOutput(outputDir string, source fetch.Result, documents []fetch.Result
 	cleanupTemp := true
 	defer func() {
 		if cleanupTemp {
-			_ = removeAllPath(tempDir)
+			_ = removeAll(tempDir)
 		}
 	}()
 
@@ -61,7 +73,7 @@ func StageOutput(outputDir string, source fetch.Result, documents []fetch.Result
 	if err := WriteCompletionMarker(tempDir); err != nil {
 		return err
 	}
-	if err := ReplaceDir(tempDir, outputDir); err != nil {
+	if err := ReplaceDir(tempDir, outputDir, opts); err != nil {
 		return err
 	}
 
@@ -75,52 +87,16 @@ func writeResult(root string, result fetch.Result) error {
 		return fmt.Errorf("create directory for %s: %w", targetPath, err)
 	}
 
-	if err := copyFile(result.LocalPath, targetPath); err != nil {
+	if err := fileutil.CopyFile(result.LocalPath, targetPath); err != nil {
 		return fmt.Errorf("write %s: %w", targetPath, err)
 	}
 
 	return nil
 }
 
-func copyFile(sourcePath string, targetPath string) error {
-	// #nosec G304 -- sourcePath is a local spool or cached snapshot path produced by the crawler.
-	sourceFile, err := os.Open(sourcePath)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	// #nosec G304 -- targetPath is a staged output path rooted under a temp directory controlled by the crawler.
-	targetFile, err := os.Create(targetPath)
-	if err != nil {
-		return err
-	}
-
-	success := false
-	defer func() {
-		_ = targetFile.Close()
-		if !success {
-			_ = os.Remove(targetPath)
-		}
-	}()
-
-	if _, err := io.Copy(targetFile, sourceFile); err != nil {
-		return err
-	}
-	if err := targetFile.Close(); err != nil {
-		return err
-	}
-	// #nosec G302 -- tracked snapshot files are intended to remain world-readable in the checked-out repo.
-	if err := os.Chmod(targetPath, 0o644); err != nil {
-		return err
-	}
-
-	success = true
-	return nil
-}
-
 // ReplaceDir atomically replaces outputDir with tempDir using a backup-and-rename strategy.
-func ReplaceDir(tempDir string, outputDir string) error {
+func ReplaceDir(tempDir string, outputDir string, opts *StageOptions) error {
+	removeAll := opts.removeAll()
 	backupDir := outputDir + ".bak"
 	journal := Journal{
 		TempDir:   tempDir,
@@ -143,7 +119,7 @@ func ReplaceDir(tempDir string, outputDir string) error {
 		backupExists = false
 	}
 	if backupExists && outputExists {
-		if err := removeAllPath(backupDir); err != nil {
+		if err := removeAll(backupDir); err != nil {
 			return fmt.Errorf("remove stale backup directory: %w", err)
 		}
 		backupExists = false
@@ -171,7 +147,7 @@ func ReplaceDir(tempDir string, outputDir string) error {
 	if err := os.Rename(tempDir, outputDir); err != nil {
 		if backupExists {
 			if restoreErr := os.Rename(backupDir, outputDir); restoreErr != nil {
-				return fmt.Errorf("activate new output: %w (restore backup: %v)", err, restoreErr)
+				return fmt.Errorf("activate new output: %w (restore backup: %w)", err, restoreErr)
 			}
 		}
 		return fmt.Errorf("activate new output: %w", err)
@@ -181,7 +157,7 @@ func ReplaceDir(tempDir string, outputDir string) error {
 	}
 
 	if backupExists {
-		if err := removeAllPath(backupDir); err != nil {
+		if err := removeAll(backupDir); err != nil {
 			log.Printf("Warning: failed to remove backup directory %s: %v", backupDir, err)
 		}
 	}
@@ -193,7 +169,8 @@ func ReplaceDir(tempDir string, outputDir string) error {
 }
 
 // ReconcileState recovers from a previously interrupted staging operation by replaying the journal.
-func ReconcileState(outputDir string) error {
+func ReconcileState(outputDir string, opts *StageOptions) error {
+	removeAll := opts.removeAll()
 	backupDir := outputDir + ".bak"
 	outputExists := pathExists(outputDir)
 	backupExists := pathExists(backupDir)
@@ -204,7 +181,7 @@ func ReconcileState(outputDir string) error {
 	}
 	if journal == nil {
 		if outputExists && backupExists {
-			if err := removeAllPath(backupDir); err != nil {
+			if err := removeAll(backupDir); err != nil {
 				return fmt.Errorf("remove stale backup directory: %w", err)
 			}
 			return nil
@@ -225,12 +202,12 @@ func ReconcileState(outputDir string) error {
 	switch {
 	case outputExists:
 		if backupExists {
-			if err := removeAllPath(journal.BackupDir); err != nil {
+			if err := removeAll(journal.BackupDir); err != nil {
 				return fmt.Errorf("remove stale backup directory: %w", err)
 			}
 		}
 		if tempExists {
-			if err := removeAllPath(journal.TempDir); err != nil {
+			if err := removeAll(journal.TempDir); err != nil {
 				return fmt.Errorf("remove stale staged directory: %w", err)
 			}
 		}
@@ -239,7 +216,7 @@ func ReconcileState(outputDir string) error {
 			return fmt.Errorf("restore backup output: %w", err)
 		}
 		if tempExists {
-			if err := removeAllPath(journal.TempDir); err != nil {
+			if err := removeAll(journal.TempDir); err != nil {
 				return fmt.Errorf("remove stale staged directory: %w", err)
 			}
 		}
@@ -251,7 +228,7 @@ func ReconcileState(outputDir string) error {
 			return err
 		}
 	case tempExists:
-		if err := removeAllPath(journal.TempDir); err != nil {
+		if err := removeAll(journal.TempDir); err != nil {
 			return fmt.Errorf("remove incomplete staged directory: %w", err)
 		}
 	}
@@ -327,16 +304,6 @@ func RemoveJournal(outputDir string) error {
 		return fmt.Errorf("remove stage journal: %w", err)
 	}
 	return nil
-}
-
-// SetRemoveAllFunc overrides the remove-all function for testing.
-func SetRemoveAllFunc(fn func(string) error) {
-	removeAllPath = fn
-}
-
-// ResetRemoveAllFunc restores the default remove-all function.
-func ResetRemoveAllFunc() {
-	removeAllPath = os.RemoveAll
 }
 
 func pathExists(path string) bool {

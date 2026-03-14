@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	apppkg "claudecodedocs/internal/app"
@@ -46,11 +45,7 @@ func (e *unexpectedContentError) Error() string {
 	return e.message
 }
 
-var removeAllPath = os.RemoveAll
-
-func syncTestHooks() {
-	stagepkg.SetRemoveAllFunc(removeAllPath)
-}
+var testStageOpts *stagepkg.StageOptions
 
 func toCompatUnexpected(err error) error {
 	var unexpected *fetchpkg.UnexpectedContentError
@@ -88,8 +83,12 @@ func extractLinks(body []byte) ([]string, error) {
 	return linkspkg.Extract(body)
 }
 
-func partitionDocumentURLs(links []string) ([]string, []skippedEntry, error) {
-	return linkspkg.Partition(links)
+func partitionDocumentURLs(allLinks []string) ([]string, []string, []skippedEntry, error) {
+	return linkspkg.Partition(allLinks)
+}
+
+func isIndex(rawURL string) bool {
+	return linkspkg.IsIndex(rawURL)
 }
 
 func isMarkdownURL(rawURL string) (bool, error) {
@@ -149,8 +148,7 @@ func buildDiagnosticManifest(sourceURL string, sourcePath string, source *fetchR
 }
 
 func fetchDocument(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, spoolDir string, snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
-	syncTestHooks()
-	return fetchpkg.FetchDocument(ctx, client, urlPolicy, spoolDir, snapshotRoot, rawURL, relativePath, previous)
+	return fetchpkg.FetchDocument(ctx, client, urlPolicy, spoolDir, snapshotRoot, rawURL, relativePath, previous, nil)
 }
 
 func preservePreviousDocument(snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
@@ -166,7 +164,6 @@ func safeJoin(root string, relativePath string) (string, error) {
 }
 
 func fetchDocuments(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, layout string, diagnosticsDir string, spoolDir string, snapshotRoot string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
-	syncTestHooks()
 	return fetchpkg.FetchDocuments(ctx, docURLs, fetchpkg.FetchOptions{
 		Client:            client,
 		URLPolicy:         urlPolicy,
@@ -180,13 +177,11 @@ func fetchDocuments(ctx context.Context, client *http.Client, urlPolicy *urlPoli
 }
 
 func replaceDir(tempDir string, outputDir string) error {
-	syncTestHooks()
-	return stagepkg.ReplaceDir(tempDir, outputDir)
+	return stagepkg.ReplaceDir(tempDir, outputDir, testStageOpts)
 }
 
 func reconcileStageState(outputDir string) error {
-	syncTestHooks()
-	return stagepkg.ReconcileState(outputDir)
+	return stagepkg.ReconcileState(outputDir, testStageOpts)
 }
 
 func writeStageCompletionMarker(root string) error {

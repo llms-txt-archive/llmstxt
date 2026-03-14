@@ -20,26 +20,16 @@ import (
 )
 
 const (
-	// MarkdownFetchAttempts is the number of times a markdown URL is retried on unexpected content.
+	// MarkdownFetchAttempts retries markdown URLs up to 3 times to handle
+	// transient CDN responses that initially serve HTML error pages.
 	MarkdownFetchAttempts = 3
-	// ProgressLogEvery controls how often a progress message is logged during batch fetches.
+	// ProgressLogEvery logs a progress line every 25 completed fetches
+	// to avoid flooding logs during large syncs.
 	ProgressLogEvery = 25
 )
 
 // ErrNoPreviousEntry is returned when no previous manifest entry exists for a document.
 var ErrNoPreviousEntry = errors.New("no previous snapshot entry")
-
-var retrySleepWithJitter = sleepWithJitter
-
-// SetRetrySleepFunc overrides the retry sleep function for testing.
-func SetRetrySleepFunc(fn func(context.Context, int) error) {
-	retrySleepWithJitter = fn
-}
-
-// ResetRetrySleepFunc restores the default retry sleep function.
-func ResetRetrySleepFunc() {
-	retrySleepWithJitter = sleepWithJitter
-}
 
 // Result holds the outcome of fetching a single URL.
 type Result struct {
@@ -68,6 +58,15 @@ type FetchOptions struct {
 	SnapshotRoot      string
 	Concurrency       int
 	PreviousDocuments map[string]manifest.Entry
+	// RetrySleep overrides the retry sleep function. Defaults to sleepWithJitter if nil.
+	RetrySleep func(context.Context, int) error
+}
+
+func (o *FetchOptions) retrySleep() func(context.Context, int) error {
+	if o.RetrySleep != nil {
+		return o.RetrySleep
+	}
+	return sleepWithJitter
 }
 
 // FetchDocuments downloads all document URLs concurrently and returns successful results and failures.
@@ -144,7 +143,7 @@ func FetchDocuments(ctx context.Context, docURLs []string, opts FetchOptions) ([
 						continue
 					}
 
-					result, err := FetchDocument(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.SnapshotRoot, job.url, relativePath, previous)
+					result, err := FetchDocument(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.SnapshotRoot, job.url, relativePath, previous, opts.retrySleep())
 					if err != nil {
 						failure := BuildFetchFailure(opts.DiagnosticsDir, job.url, relativePath, err)
 						preserved, preservedErr := PreservePreviousDocument(opts.SnapshotRoot, job.url, relativePath, previous)
@@ -201,6 +200,7 @@ enqueueLoop:
 }
 
 // FetchDocument downloads a single document URL, using conditional requests and retries as appropriate.
+// If retrySleep is nil, the default sleepWithJitter is used.
 func FetchDocument(
 	ctx context.Context,
 	client *http.Client,
@@ -210,7 +210,11 @@ func FetchDocument(
 	rawURL string,
 	relativePath string,
 	previous manifest.Entry,
+	retrySleep func(context.Context, int) error,
 ) (Result, error) {
+	if retrySleep == nil {
+		retrySleep = sleepWithJitter
+	}
 	if err := urlPolicy.Validate(rawURL); err != nil {
 		return Result{}, err
 	}
@@ -243,7 +247,7 @@ func FetchDocument(
 
 			response, err = FetchURL(ctx, client, rawURL, spoolDir, Validators{})
 			if err != nil {
-				return Result{}, fmt.Errorf("cache validation failed: %v; refetch also failed: %w", cacheErr, err)
+				return Result{}, fmt.Errorf("cache validation failed: %w; refetch also failed: %w", cacheErr, err)
 			}
 		}
 
@@ -252,7 +256,7 @@ func FetchDocument(
 				var unexpected *UnexpectedContentError
 				if errors.As(err, &unexpected) && attempt+1 < attempts {
 					CleanupSpoolFile(response.BodyPath)
-					if sleepErr := retrySleepWithJitter(ctx, attempt); sleepErr != nil {
+					if sleepErr := retrySleep(ctx, attempt); sleepErr != nil {
 						return Result{}, sleepErr
 					}
 					continue

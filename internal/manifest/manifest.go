@@ -9,6 +9,15 @@ import (
 	"path/filepath"
 )
 
+// SourceEntry records a nested llms.txt index discovered during recursive crawling.
+type SourceEntry struct {
+	URL            string `json:"url"`
+	Path           string `json:"path"`
+	SHA256         string `json:"sha256,omitempty"`
+	LastModifiedAt string `json:"last_modified_at,omitempty"`
+	ETag           string `json:"etag,omitempty"`
+}
+
 // Manifest describes the result of a sync run, including all fetched documents, skipped URLs, and failures.
 type Manifest struct {
 	SourceURL            string         `json:"source_url"`
@@ -21,6 +30,7 @@ type Manifest struct {
 	Documents            []Entry        `json:"documents,omitempty"`
 	Skipped              []SkippedEntry `json:"skipped,omitempty"`
 	Failures             []FetchFailure `json:"failures,omitempty"`
+	Sources              []SourceEntry  `json:"sources,omitempty"`
 }
 
 // Entry records the URL, local path, and integrity metadata for a single fetched document.

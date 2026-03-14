@@ -57,7 +57,7 @@ func SafeJoin(root string, relativePath string) (string, error) {
 
 	cleanRelative := filepath.Clean(filepath.FromSlash(relativePath))
 	if filepath.IsAbs(cleanRelative) {
-		return "", fmt.Errorf("absolute paths are not allowed: %s", relativePath)
+		return "", fmt.Errorf("absolute paths are not allowed: %q", relativePath)
 	}
 
 	targetPath := filepath.Join(absoluteRoot, cleanRelative)
@@ -66,7 +66,7 @@ func SafeJoin(root string, relativePath string) (string, error) {
 		return "", fmt.Errorf("resolve path %s: %w", relativePath, err)
 	}
 	if relativeToRoot == ".." || strings.HasPrefix(relativeToRoot, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path escapes snapshot root: %s", relativePath)
+		return "", fmt.Errorf("path escapes snapshot root: %q", relativePath)
 	}
 
 	return targetPath, nil

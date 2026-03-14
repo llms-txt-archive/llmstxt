@@ -21,7 +21,11 @@ const (
 	defaultLayout  = links.LayoutNested
 )
 
-var runApp = app.Run
+type cli struct {
+	run func(context.Context, app.Config) error
+}
+
+func newCLI() *cli { return &cli{run: app.Run} }
 
 func main() {
 	log.SetFlags(0)
@@ -30,7 +34,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := runApp(ctx, cfg); err != nil {
+	c := newCLI()
+	if err := c.run(ctx, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

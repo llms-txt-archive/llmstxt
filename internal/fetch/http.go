@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-// HTMLSniffBytes is the number of leading bytes captured for content-type sniffing.
+// HTMLSniffBytes is the number of leading bytes captured for content-type
+// sniffing, matching the net/http sniffing buffer size.
 const HTMLSniffBytes = 4096
 
 // HTTPResponse captures the relevant fields from an HTTP response after downloading the body.

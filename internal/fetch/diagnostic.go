@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"claudecodedocs/internal/fileutil"
 	"claudecodedocs/internal/manifest"
 )
 
@@ -50,7 +50,7 @@ func WriteUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, rela
 	if err := os.MkdirAll(filepath.Dir(bodyPath), 0o750); err != nil {
 		return "", fmt.Errorf("create diagnostics directory: %w", err)
 	}
-	if err := copyFile(unexpected.BodyPath, bodyPath); err != nil {
+	if err := fileutil.CopyFile(unexpected.BodyPath, bodyPath); err != nil {
 		return "", fmt.Errorf("write diagnostic body: %w", err)
 	}
 
@@ -85,43 +85,3 @@ func WriteUnexpectedContentDiagnostic(diagnosticsDir string, rawURL string, rela
 	return metaRelativePath, nil
 }
 
-func copyFile(sourcePath string, targetPath string) (err error) {
-	// #nosec G304 -- sourcePath is a local spool or cached snapshot path produced by the crawler.
-	sourceFile, err := os.Open(sourcePath)
-	if err != nil {
-		return err
-	}
-
-	// #nosec G304 -- targetPath is a diagnostic path rooted under a temp directory controlled by the crawler.
-	targetFile, err := os.Create(targetPath)
-	if err != nil {
-		_ = sourceFile.Close()
-		return err
-	}
-
-	success := false
-	defer func() {
-		if !success {
-			_ = targetFile.Close()
-			_ = sourceFile.Close()
-			_ = os.Remove(targetPath)
-		}
-	}()
-
-	if _, err := io.Copy(targetFile, sourceFile); err != nil {
-		return err
-	}
-	if err := sourceFile.Close(); err != nil {
-		return err
-	}
-	if err := targetFile.Close(); err != nil {
-		return err
-	}
-	// #nosec G302 -- diagnostics copies are intended to remain world-readable in uploaded artifacts.
-	if err := os.Chmod(targetPath, 0o644); err != nil {
-		return err
-	}
-
-	success = true
-	return nil
-}

@@ -73,15 +73,29 @@ func Extract(body []byte) ([]string, error) {
 	return links, nil
 }
 
-// Partition splits URLs into markdown document URLs and skipped non-markdown entries.
-func Partition(links []string) ([]string, []manifest.SkippedEntry, error) {
-	docURLs := make([]string, 0, len(links))
-	var skipped []manifest.SkippedEntry
+// IsIndex reports whether rawURL points to an llms.txt index file (not llms-full.txt).
+func IsIndex(rawURL string) bool {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return path.Base(parsedURL.Path) == "llms.txt"
+}
+
+// Partition splits URLs into markdown document URLs, nested llms.txt index URLs,
+// and skipped non-markdown entries.
+func Partition(links []string) (docURLs, indexURLs []string, skipped []manifest.SkippedEntry, err error) {
+	docURLs = make([]string, 0, len(links))
 
 	for _, link := range links {
-		isMarkdown, err := IsMarkdown(link)
-		if err != nil {
-			return nil, nil, fmt.Errorf("inspect link %q: %w", link, err)
+		if IsIndex(link) {
+			indexURLs = append(indexURLs, link)
+			continue
+		}
+
+		isMarkdown, parseErr := IsMarkdown(link)
+		if parseErr != nil {
+			return nil, nil, nil, fmt.Errorf("inspect link %q: %w", link, parseErr)
 		}
 
 		if isMarkdown {
@@ -92,7 +106,7 @@ func Partition(links []string) ([]string, []manifest.SkippedEntry, error) {
 		skipped = append(skipped, manifest.SkippedEntry{URL: link, Reason: NonMarkdownReason})
 	}
 
-	return docURLs, skipped, nil
+	return docURLs, indexURLs, skipped, nil
 }
 
 // IsMarkdown reports whether rawURL has a .md file extension.
@@ -126,6 +140,9 @@ func RelativePath(rawURL string, layout string) (string, error) {
 	host := parsedURL.Hostname()
 	if host == "" {
 		return "", fmt.Errorf("missing host in %q", rawURL)
+	}
+	if strings.ContainsAny(host, `/\`) || strings.Contains(host, "..") {
+		return "", fmt.Errorf("invalid host in %q", rawURL)
 	}
 
 	urlPath := parsedURL.EscapedPath()

@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,10 @@ import (
 	"claudecodedocs/internal/policy"
 	"claudecodedocs/internal/stage"
 )
+
+// maxNestedIndexes caps the BFS traversal to prevent runaway crawling
+// if an index graph contains a cycle that escapes URL deduplication.
+const maxNestedIndexes = 50
 
 // Config holds the CLI flags and settings for a sync run.
 type Config struct {
@@ -51,7 +57,7 @@ func (e *PartialSyncError) Error() string {
 }
 
 // BuildManifest assembles a manifest from the source and document fetch results.
-func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure) manifest.Manifest {
+func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure, discoveredIndexes []fetch.Result) manifest.Manifest {
 	manifestData := manifest.Manifest{
 		SourceURL:            source.URL,
 		SourcePath:           filepath.ToSlash(source.RelativePath),
@@ -79,6 +85,20 @@ func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []mani
 			LastModifiedAt: document.LastModifiedAt,
 			ETag:           document.ETag,
 		})
+	}
+
+	if len(discoveredIndexes) > 0 {
+		sources := make([]manifest.SourceEntry, 0, len(discoveredIndexes))
+		for _, idx := range discoveredIndexes {
+			sources = append(sources, manifest.SourceEntry{
+				URL:            idx.URL,
+				Path:           filepath.ToSlash(idx.RelativePath),
+				SHA256:         idx.SHA256,
+				LastModifiedAt: idx.LastModifiedAt,
+				ETag:           idx.ETag,
+			})
+		}
+		manifestData.Sources = sources
 	}
 
 	return manifestData
@@ -127,6 +147,166 @@ func WriteDiagnosticManifest(manifestPath string, manifestData manifest.Manifest
 	}
 }
 
+// DiscoveryConfig holds the dependencies for BFS index discovery.
+type DiscoveryConfig struct {
+	Client       *http.Client
+	URLPolicy    *policy.URLPolicy
+	SpoolDir     string
+	SnapshotRoot string
+	Layout       string
+	PreviousDocs map[string]manifest.Entry
+}
+
+// DiscoveryResult holds the output of BFS index discovery.
+type DiscoveryResult struct {
+	DocURLs      []string
+	Skipped      []manifest.SkippedEntry
+	IndexResults []fetch.Result
+}
+
+// normalizeIndexURL strips the fragment from a URL for dedup purposes.
+func normalizeIndexURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func skipEntry(skipped *[]manifest.SkippedEntry, rawURL, reason string, err error) {
+	*skipped = append(*skipped, manifest.SkippedEntry{
+		URL:    rawURL,
+		Reason: fmt.Sprintf("%s: %v", reason, err),
+	})
+}
+
+// processIndex fetches and parses a single nested index, returning discovered docs and child indexes.
+func processIndex(
+	ctx context.Context,
+	cfg DiscoveryConfig,
+	rawURL string,
+	skipped *[]manifest.SkippedEntry,
+) (docURLs, childIndexes []string, childSkipped []manifest.SkippedEntry, result *fetch.Result, err error) {
+	if err := cfg.URLPolicy.Validate(rawURL); err != nil {
+		skipEntry(skipped, rawURL, "policy", err)
+		return nil, nil, nil, nil, nil
+	}
+
+	relativePath := fmt.Sprintf("sources/%s", links.SourcePath(cfg.Layout))
+	if relPath, relErr := links.RelativePath(rawURL, cfg.Layout); relErr == nil {
+		relativePath = relPath
+	}
+
+	previous := manifest.Entry{}
+	if cfg.PreviousDocs != nil {
+		if prev, ok := cfg.PreviousDocs[rawURL]; ok {
+			previous = prev
+		}
+	}
+
+	fetchResult, fetchErr := fetch.FetchDocument(ctx, cfg.Client, cfg.URLPolicy, cfg.SpoolDir, cfg.SnapshotRoot, rawURL, relativePath, previous, nil)
+	if fetchErr != nil {
+		log.Printf("Skipping nested index %s: %v", rawURL, fetchErr)
+		skipEntry(skipped, rawURL, "fetch failed", fetchErr)
+		return nil, nil, nil, nil, nil
+	}
+
+	body, readErr := os.ReadFile(fetchResult.LocalPath)
+	if readErr != nil {
+		log.Printf("Skipping nested index %s: cannot read: %v", rawURL, readErr)
+		skipEntry(skipped, rawURL, "read failed", readErr)
+		return nil, nil, nil, nil, nil
+	}
+
+	childLinks, extractErr := links.Extract(body)
+	if extractErr != nil {
+		log.Printf("Skipping nested index %s: no links: %v", rawURL, extractErr)
+		skipEntry(skipped, rawURL, "no links", extractErr)
+		return nil, nil, nil, nil, nil
+	}
+
+	docs, indexes, partSkipped, partErr := links.Partition(childLinks)
+	if partErr != nil {
+		log.Printf("Skipping nested index %s: partition error: %v", rawURL, partErr)
+		skipEntry(skipped, rawURL, "partition error", partErr)
+		return nil, nil, nil, nil, nil
+	}
+
+	return docs, indexes, partSkipped, &fetchResult, nil
+}
+
+// DiscoverDocuments performs BFS discovery of nested llms.txt indexes and their linked documents.
+func DiscoverDocuments(
+	ctx context.Context,
+	primarySourceURL string,
+	initialLinks []string,
+	cfg DiscoveryConfig,
+) (*DiscoveryResult, error) {
+	docURLs, indexQueue, skipped, err := links.Partition(initialLinks)
+	if err != nil {
+		return nil, err
+	}
+
+	// visitedIndexes and seenDocs are accessed only from this goroutine (sequential BFS).
+	// Do NOT access them from worker goroutines without adding synchronization.
+	visitedIndexes := map[string]bool{normalizeIndexURL(primarySourceURL): true}
+	seenDocs := make(map[string]bool, len(docURLs))
+	for _, u := range docURLs {
+		seenDocs[normalizeIndexURL(u)] = true
+	}
+
+	queue := make([]string, len(indexQueue))
+	copy(queue, indexQueue)
+
+	var indexResults []fetch.Result
+
+	for i := 0; i < len(queue); i++ {
+		if ctx.Err() != nil {
+			break
+		}
+
+		if len(indexResults) >= maxNestedIndexes {
+			log.Printf("Nested index cap reached (%d); stopping BFS", maxNestedIndexes)
+			break
+		}
+
+		rawURL := queue[i]
+		normalized := normalizeIndexURL(rawURL)
+		if visitedIndexes[normalized] {
+			continue
+		}
+		visitedIndexes[normalized] = true
+
+		childDocs, childIndexes, childSkipped, result, err := processIndex(ctx, cfg, rawURL, &skipped)
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			indexResults = append(indexResults, *result)
+		}
+
+		for _, u := range childDocs {
+			if norm := normalizeIndexURL(u); !seenDocs[norm] {
+				seenDocs[norm] = true
+				docURLs = append(docURLs, u)
+			}
+		}
+		skipped = append(skipped, childSkipped...)
+		for _, u := range childIndexes {
+			if !visitedIndexes[normalizeIndexURL(u)] {
+				queue = append(queue, u)
+			}
+		}
+	}
+
+	return &DiscoveryResult{
+		DocURLs:      docURLs,
+		Skipped:      skipped,
+		IndexResults: indexResults,
+	}, nil
+}
+
 // Run executes the full sync: fetch the llms.txt source, download linked documents, and stage the output.
 func Run(ctx context.Context, cfg Config) error {
 	urlPolicy, err := policy.NewURLPolicy(cfg.SourceURL, cfg.AllowedHostsCSV)
@@ -157,7 +337,7 @@ func Run(ctx context.Context, cfg Config) error {
 	sourcePath := links.SourcePath(cfg.Layout)
 	sourcePrevious := manifest.PreviousSourceEntry(previousManifest, sourcePath)
 
-	sourceResult, err := fetch.FetchDocument(ctx, client, urlPolicy, spoolDir, cfg.SnapshotRoot, cfg.SourceURL, sourcePath, sourcePrevious)
+	sourceResult, err := fetch.FetchDocument(ctx, client, urlPolicy, spoolDir, cfg.SnapshotRoot, cfg.SourceURL, sourcePath, sourcePrevious, nil)
 	if err != nil {
 		failures := []manifest.FetchFailure{fetch.BuildFetchFailure(cfg.DiagnosticsDir, cfg.SourceURL, sourcePath, err)}
 		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, nil, nil, nil, failures))
@@ -178,11 +358,25 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	docURLs, skipped, err := links.Partition(extractedLinks)
+	discovery, err := DiscoverDocuments(ctx, cfg.SourceURL, extractedLinks, DiscoveryConfig{
+		Client:       client,
+		URLPolicy:    urlPolicy,
+		SpoolDir:     spoolDir,
+		SnapshotRoot: cfg.SnapshotRoot,
+		Layout:       cfg.Layout,
+		PreviousDocs: previousDocuments,
+	})
 	if err != nil {
 		failures := []manifest.FetchFailure{{URL: cfg.SourceURL, Error: err.Error()}}
-		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, nil, skipped, failures))
+		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, nil, nil, failures))
 		return err
+	}
+
+	docURLs := discovery.DocURLs
+	skipped := discovery.Skipped
+
+	if len(discovery.IndexResults) > 0 {
+		log.Printf("Discovered %d nested llms.txt indexes", len(discovery.IndexResults))
 	}
 
 	documents, failures := fetch.FetchDocuments(ctx, docURLs, fetch.FetchOptions{
@@ -200,8 +394,12 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	manifestData := BuildManifest(sourceResult, documents, skipped, failures)
-	if err := stage.StageOutput(cfg.OutputDir, sourceResult, documents); err != nil {
+	manifestData := BuildManifest(sourceResult, documents, skipped, failures, discovery.IndexResults)
+
+	allResults := make([]fetch.Result, 0, len(documents)+len(discovery.IndexResults))
+	allResults = append(allResults, documents...)
+	allResults = append(allResults, discovery.IndexResults...)
+	if err := stage.StageOutput(cfg.OutputDir, sourceResult, allResults, nil); err != nil {
 		failureWithStage := append([]manifest.FetchFailure(nil), failures...)
 		failureWithStage = append(failureWithStage, manifest.FetchFailure{
 			URL:   cfg.SourceURL,
