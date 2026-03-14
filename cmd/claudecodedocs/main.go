@@ -5,7 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,9 +28,11 @@ type cli struct {
 func newCLI() *cli { return &cli{run: app.Run} }
 
 func main() {
-	log.SetFlags(0)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	slog.SetDefault(logger)
 
 	cfg := parseFlags()
+	cfg.Logger = logger
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -53,6 +55,7 @@ func parseFlags() app.Config {
 	flag.StringVar(&cfg.AllowedHostsCSV, "allowed-hosts", "", "comma-separated additional hosts allowed for document fetches")
 	flag.DurationVar(&cfg.Timeout, "timeout", defaultTimeout, "HTTP timeout per request")
 	flag.IntVar(&cfg.Concurrency, "concurrency", defaultWorkers, "maximum number of concurrent fetches")
+	flag.Float64Var(&cfg.RateLimit, "rate-limit", 0, "maximum requests per second (0 = unlimited)")
 	flag.Parse()
 
 	if cfg.SourceURL == "" {

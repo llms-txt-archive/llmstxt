@@ -4,7 +4,7 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +17,8 @@ import (
 	"claudecodedocs/internal/manifest"
 	"claudecodedocs/internal/policy"
 	"claudecodedocs/internal/stage"
+
+	"golang.org/x/time/rate"
 )
 
 // maxNestedIndexes caps the BFS traversal to prevent runaway crawling
@@ -33,8 +35,17 @@ type Config struct {
 	DiagnosticsDir       string
 	AllowedHostsCSV      string
 	SnapshotRoot         string
+	RateLimit            float64
 	Timeout              time.Duration
 	Concurrency          int
+	Logger               *slog.Logger
+}
+
+func (c Config) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.Default()
 }
 
 // PartialSyncError reports documents that failed to fetch while others succeeded.
@@ -143,7 +154,7 @@ func WriteDiagnosticManifest(manifestPath string, manifestData manifest.Manifest
 		return
 	}
 	if err := manifest.Write(manifestPath, &manifestData); err != nil {
-		log.Printf("Failed to write diagnostics manifest %s: %v", manifestPath, err)
+		slog.Warn("failed to write diagnostics manifest", "path", manifestPath, "error", err)
 	}
 }
 
@@ -155,6 +166,14 @@ type DiscoveryConfig struct {
 	SnapshotRoot string
 	Layout       string
 	PreviousDocs map[string]manifest.Entry
+	Logger       *slog.Logger
+}
+
+func (c DiscoveryConfig) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.Default()
 }
 
 // DiscoveryResult holds the output of BFS index discovery.
@@ -207,28 +226,28 @@ func processIndex(
 
 	fetchResult, fetchErr := fetch.FetchDocument(ctx, cfg.Client, cfg.URLPolicy, cfg.SpoolDir, cfg.SnapshotRoot, rawURL, relativePath, previous, nil)
 	if fetchErr != nil {
-		log.Printf("Skipping nested index %s: %v", rawURL, fetchErr)
+		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", fetchErr)
 		skipEntry(skipped, rawURL, "fetch failed", fetchErr)
 		return nil, nil, nil, nil, nil
 	}
 
 	body, readErr := os.ReadFile(fetchResult.LocalPath)
 	if readErr != nil {
-		log.Printf("Skipping nested index %s: cannot read: %v", rawURL, readErr)
+		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", readErr)
 		skipEntry(skipped, rawURL, "read failed", readErr)
 		return nil, nil, nil, nil, nil
 	}
 
 	childLinks, extractErr := links.Extract(body)
 	if extractErr != nil {
-		log.Printf("Skipping nested index %s: no links: %v", rawURL, extractErr)
+		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", extractErr)
 		skipEntry(skipped, rawURL, "no links", extractErr)
 		return nil, nil, nil, nil, nil
 	}
 
 	docs, indexes, partSkipped, partErr := links.Partition(childLinks)
 	if partErr != nil {
-		log.Printf("Skipping nested index %s: partition error: %v", rawURL, partErr)
+		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", partErr)
 		skipEntry(skipped, rawURL, "partition error", partErr)
 		return nil, nil, nil, nil, nil
 	}
@@ -267,7 +286,7 @@ func DiscoverDocuments(
 		}
 
 		if len(indexResults) >= maxNestedIndexes {
-			log.Printf("Nested index cap reached (%d); stopping BFS", maxNestedIndexes)
+			cfg.logger().Warn("nested index cap reached", "limit", maxNestedIndexes)
 			break
 		}
 
@@ -365,6 +384,7 @@ func Run(ctx context.Context, cfg Config) error {
 		SnapshotRoot: cfg.SnapshotRoot,
 		Layout:       cfg.Layout,
 		PreviousDocs: previousDocuments,
+		Logger:       cfg.Logger,
 	})
 	if err != nil {
 		failures := []manifest.FetchFailure{{URL: cfg.SourceURL, Error: err.Error()}}
@@ -376,7 +396,12 @@ func Run(ctx context.Context, cfg Config) error {
 	skipped := discovery.Skipped
 
 	if len(discovery.IndexResults) > 0 {
-		log.Printf("Discovered %d nested llms.txt indexes", len(discovery.IndexResults))
+		cfg.logger().Info("discovered nested indexes", "count", len(discovery.IndexResults))
+	}
+
+	var limiter *rate.Limiter
+	if cfg.RateLimit > 0 {
+		limiter = rate.NewLimiter(rate.Limit(cfg.RateLimit), int(cfg.RateLimit)+1)
 	}
 
 	documents, failures := fetch.FetchDocuments(ctx, docURLs, fetch.FetchOptions{
@@ -387,7 +412,9 @@ func Run(ctx context.Context, cfg Config) error {
 		SpoolDir:          spoolDir,
 		SnapshotRoot:      cfg.SnapshotRoot,
 		Concurrency:       cfg.Concurrency,
+		RateLimiter:       limiter,
 		PreviousDocuments: previousDocuments,
+		Logger:            cfg.Logger,
 	})
 	if err := ctx.Err(); err != nil {
 		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, documents, skipped, failures))

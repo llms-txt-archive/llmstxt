@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,9 @@ import (
 // HTMLSniffBytes is the number of leading bytes captured for content-type
 // sniffing, matching the net/http sniffing buffer size.
 const HTMLSniffBytes = 4096
+
+// MaxBodyBytes caps individual response bodies at 256 MiB.
+const MaxBodyBytes = 256 << 20
 
 // HTTPResponse captures the relevant fields from an HTTP response after downloading the body.
 type HTTPResponse struct {
@@ -29,6 +33,32 @@ type HTTPResponse struct {
 	Sniff          []byte
 	SHA256         string
 	Bytes          int64
+}
+
+// TransientHTTPError wraps HTTP errors that may succeed on retry (5xx, 429).
+type TransientHTTPError struct {
+	StatusCode int
+	Status     string
+	RetryAfter time.Duration
+}
+
+func (e *TransientHTTPError) Error() string {
+	return fmt.Sprintf("transient HTTP %s", e.Status)
+}
+
+func parseRetryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 && seconds <= 300 {
+		return time.Duration(seconds) * time.Second
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		if d := time.Until(t); d > 0 && d <= 5*time.Minute {
+			return d
+		}
+	}
+	return 0
 }
 
 // FetchURL performs an HTTP GET, writes the response body to a spool file, and returns the response metadata.
@@ -73,6 +103,13 @@ func FetchURL(ctx context.Context, client *http.Client, rawURL string, spoolDir 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			return HTTPResponse{}, &TransientHTTPError{
+				StatusCode: resp.StatusCode,
+				Status:     resp.Status,
+				RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+			}
+		}
 		return HTTPResponse{}, fmt.Errorf("unexpected HTTP %s", resp.Status)
 	}
 
@@ -92,9 +129,13 @@ func FetchURL(ctx context.Context, client *http.Client, rawURL string, spoolDir 
 	hasher := sha256.New()
 	capture := &PrefixCaptureWriter{Limit: HTMLSniffBytes}
 
-	written, err := io.Copy(io.MultiWriter(spoolFile, hasher, capture), resp.Body)
+	bodyReader := io.LimitReader(resp.Body, MaxBodyBytes+1)
+	written, err := io.Copy(io.MultiWriter(spoolFile, hasher, capture), bodyReader)
 	if err != nil {
 		return HTTPResponse{}, fmt.Errorf("stream response body: %w", err)
+	}
+	if written > MaxBodyBytes {
+		return HTTPResponse{}, fmt.Errorf("response body exceeds %d bytes", MaxBodyBytes)
 	}
 
 	response.BodyPath = spoolFile.Name()

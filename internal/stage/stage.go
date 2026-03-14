@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -158,11 +158,11 @@ func ReplaceDir(tempDir string, outputDir string, opts *StageOptions) error {
 
 	if backupExists {
 		if err := removeAll(backupDir); err != nil {
-			log.Printf("Warning: failed to remove backup directory %s: %v", backupDir, err)
+			slog.Warn("failed to remove backup directory", "path", backupDir, "error", err)
 		}
 	}
 	if err := RemoveJournal(outputDir); err != nil {
-		log.Printf("Warning: failed to remove stage journal for %s: %v", outputDir, err)
+		slog.Warn("failed to remove stage journal", "path", outputDir, "error", err)
 	}
 
 	return nil

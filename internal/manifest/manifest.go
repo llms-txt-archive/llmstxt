@@ -18,8 +18,12 @@ type SourceEntry struct {
 	ETag           string `json:"etag,omitempty"`
 }
 
+// ManifestVersion is the current manifest schema version.
+const ManifestVersion = 1
+
 // Manifest describes the result of a sync run, including all fetched documents, skipped URLs, and failures.
 type Manifest struct {
+	Version              int            `json:"version"`
 	SourceURL            string         `json:"source_url"`
 	SourcePath           string         `json:"source_path"`
 	SourceSHA256         string         `json:"source_sha256,omitempty"`
@@ -77,6 +81,10 @@ func Load(manifestPath string) (*Manifest, error) {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 
+	if manifestData.Version != 0 && manifestData.Version != ManifestVersion {
+		return nil, fmt.Errorf("unsupported manifest version %d (expected %d)", manifestData.Version, ManifestVersion)
+	}
+
 	return &manifestData, nil
 }
 
@@ -85,6 +93,8 @@ func Write(manifestPath string, manifestData *Manifest) error {
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
 		return fmt.Errorf("create manifest directory: %w", err)
 	}
+
+	manifestData.Version = ManifestVersion
 
 	manifestBytes, err := json.MarshalIndent(manifestData, "", "  ")
 	if err != nil {

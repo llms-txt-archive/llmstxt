@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"path/filepath"
@@ -17,12 +17,17 @@ import (
 	"claudecodedocs/internal/links"
 	"claudecodedocs/internal/manifest"
 	"claudecodedocs/internal/policy"
+
+	"golang.org/x/time/rate"
 )
 
 const (
 	// MarkdownFetchAttempts retries markdown URLs up to 3 times to handle
 	// transient CDN responses that initially serve HTML error pages.
 	MarkdownFetchAttempts = 3
+	// TransientRetryAttempts retries non-markdown URLs up to 2 times to
+	// handle transient HTTP errors (5xx, 429).
+	TransientRetryAttempts = 2
 	// ProgressLogEvery logs a progress line every 25 completed fetches
 	// to avoid flooding logs during large syncs.
 	ProgressLogEvery = 25
@@ -58,8 +63,11 @@ type FetchOptions struct {
 	SnapshotRoot      string
 	Concurrency       int
 	PreviousDocuments map[string]manifest.Entry
+	// RateLimiter controls the rate of outbound HTTP requests. Nil means no limit.
+	RateLimiter *rate.Limiter
 	// RetrySleep overrides the retry sleep function. Defaults to sleepWithJitter if nil.
 	RetrySleep func(context.Context, int) error
+	Logger     *slog.Logger
 }
 
 func (o *FetchOptions) retrySleep() func(context.Context, int) error {
@@ -67,6 +75,13 @@ func (o *FetchOptions) retrySleep() func(context.Context, int) error {
 		return o.RetrySleep
 	}
 	return sleepWithJitter
+}
+
+func (o *FetchOptions) logger() *slog.Logger {
+	if o != nil && o.Logger != nil {
+		return o.Logger
+	}
+	return slog.Default()
 }
 
 // FetchDocuments downloads all document URLs concurrently and returns successful results and failures.
@@ -89,12 +104,12 @@ func FetchDocuments(ctx context.Context, docURLs []string, opts FetchOptions) ([
 	recordCompletion := func() {
 		done := completed.Add(1)
 		if done%ProgressLogEvery == 0 || done == int64(len(docURLs)) {
-			log.Printf("Fetched %d/%d markdown documents", done, len(docURLs))
+			opts.logger().Info("fetch progress", "done", done, "total", len(docURLs))
 		}
 	}
 
 	recordFailure := func(jobURL string, failure manifest.FetchFailure) {
-		log.Printf("Fetch failure for %s: %s", jobURL, failure.Error)
+		opts.logger().Warn("fetch failure", "url", jobURL, "error", failure.Error)
 		mu.Lock()
 		failures = append(failures, failure)
 		mu.Unlock()
@@ -123,6 +138,12 @@ func FetchDocuments(ctx context.Context, docURLs []string, opts FetchOptions) ([
 						if err != nil {
 							recordFailure(job.url, manifest.FetchFailure{URL: job.url, Error: fmt.Sprintf("map URL: %v", err)})
 							continue
+						}
+					}
+
+					if opts.RateLimiter != nil {
+						if err := opts.RateLimiter.Wait(ctx); err != nil {
+							return
 						}
 					}
 
@@ -228,7 +249,7 @@ func FetchDocument(
 		ETag:           previous.ETag,
 	}
 
-	attempts := 1
+	attempts := TransientRetryAttempts
 	if requireMarkdown {
 		attempts = MarkdownFetchAttempts
 	}
@@ -236,6 +257,13 @@ func FetchDocument(
 	for attempt := 0; attempt < attempts; attempt++ {
 		response, err := FetchURL(ctx, client, rawURL, spoolDir, validators)
 		if err != nil {
+			var transient *TransientHTTPError
+			if errors.As(err, &transient) && attempt+1 < attempts {
+				if sleepErr := retrySleep(ctx, attempt); sleepErr != nil {
+					return Result{}, sleepErr
+				}
+				continue
+			}
 			return Result{}, err
 		}
 

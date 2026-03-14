@@ -26,8 +26,11 @@ jobs:
           cache: true
           go-version-file: go.mod
 
+      - name: Verify module checksums
+        run: go mod verify
+
       - name: Run tests
-        run: go test ./...
+        run: go test -race -count=1 ./...
 
       - name: Run go vet
         run: go vet ./...
@@ -43,3 +46,15 @@ jobs:
 
       - name: Run golangci-lint
         run: golangci-lint run
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+      - name: Install nilaway
+        run: go install go.uber.org/nilaway/cmd/nilaway@latest
+
+      - name: Run nilaway
+        run: nilaway ./...

@@ -446,6 +446,7 @@ func TestWriteManifestAndLoadManifestRoundTrip(t *testing.T) {
 	manifestPath := filepath.Join(tempDir, "manifest.json")
 
 	want := manifest{
+		Version:              1,
 		SourceURL:            "https://example.com/llms.txt",
 		SourcePath:           "llms.txt",
 		SourceSHA256:         "source-hash",

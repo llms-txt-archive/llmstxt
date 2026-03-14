@@ -162,6 +162,9 @@ func NewHTTPClient(timeout time.Duration, urlPolicy *URLPolicy) *http.Client {
 		baseTransport = &http.Transport{}
 	}
 	transport := baseTransport.Clone()
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 10
+	transport.IdleConnTimeout = 90 * time.Second
 	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
 
 	transport.DialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {

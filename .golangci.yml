@@ -4,16 +4,23 @@ run:
 linters:
   enable:
     - bodyclose
+    - copyloopvar
+    - durationcheck
     - errcheck
+    - errorlint
+    - exhaustive
     - goimports
     - gosec
     - govet
     - ineffassign
+    - makezero
     - noctx
+    - prealloc
     - revive
     - staticcheck
     - unconvert
     - unused
+    - wastedassign
 
 issues:
   exclude-use-default: false
