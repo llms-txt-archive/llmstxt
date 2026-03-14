@@ -1,8 +1,6 @@
 # llmstxt
 
-Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org/) and tracking how it changes over time.
-
-Any site that publishes an `llms.txt` index can be archived. The current consumers mirror Anthropic's Claude documentation, but nothing here is Claude-specific.
+Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org/) and tracking how it changes over time. Any site that publishes an `llms.txt` index can be archived.
 
 ## What this repo contains
 
@@ -14,19 +12,10 @@ Any site that publishes an `llms.txt` index can be archived. The current consume
 | Codex integration | `.github/codex/`, `.github/scripts/` | AI-generated release notes with hardened validation |
 | CI | `.github/workflows/ci.yml` | Tests, linting, vulnerability scanning |
 
-## What this repo does NOT contain
-
-Generated output (fetched markdown, manifests) belongs in **archive repos**, not here. Examples:
-
-- [`claude-code-docs-archive`](https://github.com/f-pisani/claude-code-docs-archive) — mirrors `code.claude.com/docs/llms.txt`
-- [`claude-platform-docs-archive`](https://github.com/f-pisani/claude-platform-docs-archive) — mirrors `platform.claude.com/llms.txt`
-
-Archive repos are thin: raw `.md` files at root, a generated `README.md`, and a caller workflow. That's it.
-
 ## Architecture
 
 ```
-llmstxt (this repo)                        Archive repo (e.g. claude-code-docs-archive)
+llmstxt (this repo)                        Archive repo (consumer)
 ========================                   ==========================================
 cmd/claudecodedocs/  (crawler binary)      .github/workflows/sync.yml (caller)
 cmd/snapshotreadme/  (readme binary)       *.md files at root (generated)
@@ -34,6 +23,8 @@ internal/            (Go packages)         README.md (generated)
 .github/workflows/snapshot-sync.yml  <---  calls this reusable workflow
 templates/           (readme template)     releases → manifest.json (asset, NOT tracked)
 ```
+
+Archive repos are thin: a caller workflow, raw `.md` files at root, and a generated `README.md`. No fetched documents or manifests live in this tool repo.
 
 ### How a sync runs
 
@@ -66,9 +57,9 @@ templates/           (readme template)     releases → manifest.json (asset, NO
 # Build
 make build
 
-# Crawl Claude Code docs
+# Crawl a site
 go run ./cmd/claudecodedocs \
-  -source https://code.claude.com/docs/llms.txt \
+  -source https://example.com/llms.txt \
   -out /tmp/snapshot \
   -layout root \
   -manifest-out /tmp/manifest.json
