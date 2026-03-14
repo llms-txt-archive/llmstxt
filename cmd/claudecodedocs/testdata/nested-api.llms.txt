@@ -1,0 +1,6 @@
+# API Documentation
+
+- [Endpoints](https://example.com/docs/api-endpoints.md)
+- [Authentication](https://example.com/docs/api-auth.md)
+- [Getting Started](https://example.com/docs/getting-started.md)
+- [Deep Index](https://example.com/api/v2/llms.txt)

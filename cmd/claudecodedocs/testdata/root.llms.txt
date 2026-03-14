@@ -1,0 +1,8 @@
+# Example Project
+
+> Documentation index for Example Project.
+
+- [Getting Started](https://example.com/docs/getting-started.md)
+- [API Reference](https://example.com/docs/api-reference.md)
+- [API Index](https://example.com/api/llms.txt)
+- [SDK Index](https://example.com/sdk/llms.txt)

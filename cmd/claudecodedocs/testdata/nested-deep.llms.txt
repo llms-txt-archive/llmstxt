@@ -1,0 +1,3 @@
+# API v2 Documentation
+
+- [Migration Guide](https://example.com/docs/api-v2-migration.md)
