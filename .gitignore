@@ -5,7 +5,7 @@
 *.so
 *.dylib
 /bin/
-/claudecodedocs
+/crawler
 
 # Test binary, built with `go test -c`
 *.test

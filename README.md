@@ -6,7 +6,7 @@ Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| Crawler | `cmd/claudecodedocs/` | Fetches an `llms.txt` index and all linked `.md` documents |
+| Crawler | `cmd/crawler/` | Fetches an `llms.txt` index and all linked `.md` documents |
 | README renderer | `cmd/snapshotreadme/` | Generates a README for archive repos from a Go template |
 | Reusable workflow | `.github/workflows/snapshot-sync.yml` | End-to-end sync: crawl, diff, commit, release |
 | Codex integration | `.github/codex/`, `.github/scripts/` | AI-generated release notes with hardened validation |
@@ -14,27 +14,45 @@ Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org
 
 ## Architecture
 
-```
-llmstxt (this repo)                        Archive repo (consumer)
-========================                   ==========================================
-cmd/claudecodedocs/  (crawler binary)      .github/workflows/sync.yml (caller)
-cmd/snapshotreadme/  (readme binary)       *.md files at root (generated)
-internal/            (Go packages)         README.md (generated)
-.github/workflows/snapshot-sync.yml  <---  calls this reusable workflow
-templates/           (readme template)     releases → manifest.json (asset, NOT tracked)
-```
+```mermaid
+flowchart TB
+    subgraph tool["llmstxt (this repo)"]
+        crawler["cmd/crawler"]
+        readme["cmd/snapshotreadme"]
+        workflow["snapshot-sync.yml"]
+        codex["Codex integration"]
+    end
 
-Archive repos are thin: a caller workflow, raw `.md` files at root, and a generated `README.md`. No fetched documents or manifests live in this tool repo.
+    subgraph archive["Archive repo (consumer)"]
+        caller["sync.yml (caller workflow)"]
+        docs[".md files at root"]
+        readmeout["README.md"]
+        release["GitHub Release\n+ manifest.json asset"]
+    end
+
+    subgraph external["External"]
+        site["any-site.com/llms.txt"]
+    end
+
+    caller -- "calls reusable workflow" --> workflow
+    workflow -- "1. download previous manifest" --> release
+    workflow -- "2. crawl" --> crawler
+    crawler -- "fetch index + .md docs" --> site
+    crawler -- "3. output .md files" --> docs
+    workflow -- "4. render" --> readme
+    readme -- "generate" --> readmeout
+    workflow -- "5. generate release notes" --> codex
+    workflow -- "6. commit + tag + upload manifest" --> release
+```
 
 ### How a sync runs
 
-1. Archive repo's `sync.yml` calls `snapshot-sync.yml` on a schedule (e.g. hourly)
-2. Workflow checks out both the archive repo and this tool repo
-3. Downloads the previous `manifest.json` from the latest release (for conditional requests)
-4. Runs the crawler: fetches `llms.txt`, discovers linked docs (including nested indexes via BFS), downloads all `.md` files concurrently
-5. Syncs generated files into the archive repo root via `rsync`
-6. If content changed: commits, creates a tagged release with `manifest.json` as an asset
-7. For non-initial releases, Codex generates the commit message and release notes
+1. Archive repo's `sync.yml` triggers `snapshot-sync.yml` on a schedule (e.g. hourly)
+2. Workflow downloads the previous `manifest.json` from the latest release (for conditional requests)
+3. Crawler fetches `llms.txt`, discovers linked docs via BFS, downloads all `.md` files concurrently
+4. Generated files are synced into the archive repo root via `rsync`
+5. If content changed: Codex generates commit message and release notes
+6. Workflow commits, tags, and creates a release with `manifest.json` as an asset
 
 ### Crawler features
 
@@ -58,14 +76,14 @@ Archive repos are thin: a caller workflow, raw `.md` files at root, and a genera
 make build
 
 # Crawl a site
-go run ./cmd/claudecodedocs \
+go run ./cmd/crawler \
   -source https://example.com/llms.txt \
   -out /tmp/snapshot \
   -layout root \
   -manifest-out /tmp/manifest.json
 
 # With rate limiting and cross-host support
-go run ./cmd/claudecodedocs \
+go run ./cmd/crawler \
   -source https://example.com/llms.txt \
   -allowed-hosts docs.examplecdn.com \
   -rate-limit 5 \
@@ -108,14 +126,14 @@ on:
 
 jobs:
   sync:
-    uses: f-pisani/llmstxt/.github/workflows/snapshot-sync.yml@main
+    uses: f-pisani/llmstxt/.github/workflows/snapshot-sync.yml@v1.0.0
     with:
       source_url: "https://example.com/llms.txt"
       site_name: "Example Docs"
       site_url: "https://example.com"
       repo_title: "Example Docs Archive"
       schedule_label: "Hourly at :42 UTC"
-      tool_ref: main
+      tool_ref: v1.0.0
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
@@ -123,7 +141,6 @@ jobs:
 3. Set the `OPENAI_API_KEY` secret (required for AI-generated release notes after the initial sync)
 4. Optionally set `CODEX_MODEL` and `CODEX_EFFORT` repository variables to override Codex defaults
 
-> **Versioning:** We recommend pinning `tool_ref` to a tagged release (e.g. `v1.0.0`) for stability. Tagged releases are planned.
 
 ## Invariants for agents working on this codebase
 

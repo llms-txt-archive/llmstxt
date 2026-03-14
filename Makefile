@@ -2,7 +2,7 @@
 
 # Build both binaries
 build:
-	go build -o bin/claudecodedocs ./cmd/claudecodedocs
+	go build -o bin/crawler ./cmd/crawler
 	go build -o bin/snapshotreadme ./cmd/snapshotreadme
 
 # Run tests with race detector
