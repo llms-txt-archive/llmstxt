@@ -142,16 +142,3 @@ jobs:
 4. Optionally set `CODEX_MODEL` and `CODEX_EFFORT` repository variables to override Codex defaults
 
 
-## Invariants for agents working on this codebase
-
-If you're an AI agent modifying this repo, these rules are critical:
-
-- **`manifest.json` is a release asset.** It is never git-tracked in archive repos. It's uploaded on release creation and downloaded from the previous release for incremental syncs.
-- **The archive repo contract is sacred.** `snapshot-sync.yml` outputs raw `.md` at root + generated `README.md`. Changing this structure breaks all consumer repos.
-- **Codex validation is security-hardened.** The validator (`validate_codex_release.py`) rejects prompt injection, placeholder text, and instruction-following patterns. Do not weaken these checks.
-- **This repo contains no fetched documents.** Generated output (markdown files, manifests) belongs in archive repos. The `/snapshot/` directory is gitignored.
-- **The goal is tracking documentation changes over time.** Every sync is a release. The release history IS the changelog of how documentation evolved.
-
-## Future direction
-
-This repo will move to the [`llms-txt-archive`](https://github.com/llms-txt-archive) GitHub org and may evolve into a monorepo hosting additional tools for the `llms.txt` ecosystem.
