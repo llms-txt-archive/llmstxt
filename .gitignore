@@ -1,5 +1,14 @@
+# Build artifacts
+/bin/
 /claudecodedocs
-/agents/
+
+# Generated snapshot output (belongs in archive repos, not here)
+/snapshot/
 /snapshot.bak/
+
+# Local
+/agents/
+
+# Python
 __pycache__/
 *.pyc
