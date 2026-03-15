@@ -381,7 +381,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Client:       client,
 		URLPolicy:    urlPolicy,
 		SpoolDir:     spoolDir,
-		ArchiveRoot: cfg.ArchiveRoot,
+		ArchiveRoot:  cfg.ArchiveRoot,
 		Layout:       cfg.Layout,
 		PreviousDocs: previousDocuments,
 		Logger:       cfg.Logger,
