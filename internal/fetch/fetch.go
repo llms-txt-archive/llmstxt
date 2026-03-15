@@ -60,7 +60,7 @@ type Options struct {
 	Layout            string
 	DiagnosticsDir    string
 	SpoolDir          string
-	ArchiveRoot      string
+	ArchiveRoot       string
 	Concurrency       int
 	PreviousDocuments map[string]manifest.Entry
 	// RateLimiter controls the rate of outbound HTTP requests. Nil means no limit.

@@ -34,7 +34,7 @@ type Config struct {
 	ManifestOut          string
 	DiagnosticsDir       string
 	AllowedHostsCSV      string
-	ArchiveRoot         string
+	ArchiveRoot          string
 	RateLimit            float64
 	Timeout              time.Duration
 	Concurrency          int
@@ -163,7 +163,7 @@ type DiscoveryConfig struct {
 	Client       *http.Client
 	URLPolicy    *policy.URLPolicy
 	SpoolDir     string
-	ArchiveRoot string
+	ArchiveRoot  string
 	Layout       string
 	PreviousDocs map[string]manifest.Entry
 	Logger       *slog.Logger
@@ -410,7 +410,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Layout:            cfg.Layout,
 		DiagnosticsDir:    cfg.DiagnosticsDir,
 		SpoolDir:          spoolDir,
-		ArchiveRoot:      cfg.ArchiveRoot,
+		ArchiveRoot:       cfg.ArchiveRoot,
 		Concurrency:       cfg.Concurrency,
 		RateLimiter:       limiter,
 		PreviousDocuments: previousDocuments,

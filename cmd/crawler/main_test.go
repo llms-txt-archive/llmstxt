@@ -129,7 +129,7 @@ func TestParseFlagsUsesDefaults(t *testing.T) {
 		t.Fatalf("parseFlags() concurrency = %d, want %d", cfg.Concurrency, defaultWorkers)
 	}
 	if cfg.ArchiveRoot != wd {
-		t.Fatalf("parseFlags() snapshot_root = %q, want %q", cfg.ArchiveRoot, wd)
+		t.Fatalf("parseFlags() archive_root = %q, want %q", cfg.ArchiveRoot, wd)
 	}
 }
 
