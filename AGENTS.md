@@ -9,9 +9,9 @@ Archive documentation exposed via `llms.txt` and track how it changes over time.
 This is the **tool repo**. It builds the crawler and workflow that archive repos consume. It contains zero fetched documents — generated output lives exclusively in archive repos.
 
 - `cmd/crawler/` — fetches an `llms.txt` index and all linked `.md` documents
-- `cmd/snapshotreadme/` — renders README for archive repos from a Go template
+- `cmd/readmegen/` — renders README for archive repos from a Go template
 - `internal/` — shared Go packages (app, fetch, fileutil, links, manifest, policy, stage)
-- `.github/workflows/snapshot-sync.yml` — reusable workflow: crawl, diff, commit, release
+- `.github/workflows/archive-sync.yml` — reusable workflow: crawl, diff, commit, release
 - `.github/codex/` — Codex prompt and schema for AI-generated release notes
 - `.github/scripts/` — Python validators, emitters, and bash helpers for Codex pipeline
 - `templates/` — Go template for archive repo READMEs
@@ -19,13 +19,13 @@ This is the **tool repo**. It builds the crawler and workflow that archive repos
 ## Rules
 
 - **`manifest.json` is a release asset.** Never git-track it. It's uploaded on release creation and downloaded from the previous release for conditional requests.
-- **The archive repo contract is sacred.** `snapshot-sync.yml` outputs raw `.md` at root + generated `README.md`. Changing this structure breaks all consumer repos.
+- **The archive repo contract is sacred.** `archive-sync.yml` outputs raw `.md` at root + generated `README.md`. Changing this structure breaks all consumer repos.
 - **Codex validation is security-hardened.** The validator (`validate_codex_release.py`) rejects prompt injection, placeholder text, and instruction-following patterns. Do not weaken these checks.
-- **No fetched documents in this repo.** The `/snapshot/` directory is gitignored. All generated output belongs in archive repos.
+- **No fetched documents in this repo.** The `/archive/` directory is gitignored. All generated output belongs in archive repos.
 
 ## Go module
 
-The module is currently named `claudecodedocs` (rename to `llmstxt` pending). Import paths use `claudecodedocs/internal/...`.
+The module is `github.com/f-pisani/llmstxt`. Import paths use `github.com/f-pisani/llmstxt/internal/...`.
 
 ## Testing
 

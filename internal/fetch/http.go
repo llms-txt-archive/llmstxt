@@ -160,7 +160,7 @@ func copyHeader(header http.Header) map[string][]string {
 }
 
 func buildUserAgent() string {
-	return fmt.Sprintf("claudecodedocs-sync/2.0 (%s %s)", runtime.GOOS, runtime.GOARCH)
+	return fmt.Sprintf("llmstxt-sync/2.0 (%s %s)", runtime.GOOS, runtime.GOARCH)
 }
 
 // IfModifiedSinceHeader converts an RFC 3339 timestamp into an HTTP-date suitable for If-Modified-Since.

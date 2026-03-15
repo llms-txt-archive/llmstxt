@@ -24,7 +24,7 @@ func SummarizeExistingFile(root string, relativePath string) (localPath string, 
 		return "", "", 0, err
 	}
 
-	// #nosec G304 -- localPath is anchored to snapshotRoot via SafeJoin.
+	// #nosec G304 -- localPath is anchored to archiveRoot via SafeJoin.
 	file, err := os.Open(localPath)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("read cached file %s: %w", relativePath, err)
@@ -66,7 +66,7 @@ func SafeJoin(root string, relativePath string) (string, error) {
 		return "", fmt.Errorf("resolve path %s: %w", relativePath, err)
 	}
 	if relativeToRoot == ".." || strings.HasPrefix(relativeToRoot, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path escapes snapshot root: %q", relativePath)
+		return "", fmt.Errorf("path escapes archive root: %q", relativePath)
 	}
 
 	return targetPath, nil

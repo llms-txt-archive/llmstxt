@@ -9,13 +9,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"claudecodedocs/internal/fetch"
-	"claudecodedocs/internal/fileutil"
+	"github.com/f-pisani/llmstxt/internal/fetch"
+	"github.com/f-pisani/llmstxt/internal/fileutil"
 )
 
 const (
-	journalName  = ".claudecodedocs-stage.json"
-	completeName = ".claudecodedocs-complete"
+	journalName  = ".llmstxt-stage.json"
+	completeName = ".llmstxt-complete"
 )
 
 // Options configures staging behavior. A nil *Options is valid and uses defaults.
@@ -50,7 +50,7 @@ func Output(outputDir string, source fetch.Result, documents []fetch.Result, opt
 		return err
 	}
 
-	tempDir, err := os.MkdirTemp(parentDir, ".claudecodedocs-*")
+	tempDir, err := os.MkdirTemp(parentDir, ".llmstxt-*")
 	if err != nil {
 		return fmt.Errorf("create temp directory: %w", err)
 	}

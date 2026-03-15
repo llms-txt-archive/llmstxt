@@ -23,9 +23,9 @@ go.work.sum
 # env file
 .env
 
-# Generated snapshot output (belongs in archive repos, not here)
-/snapshot/
-/snapshot.bak/
+# Generated archive output (belongs in archive repos, not here)
+/archive/
+/archive.bak/
 
 # Local
 /agents/

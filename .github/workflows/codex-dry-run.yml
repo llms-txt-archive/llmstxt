@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "GitHub Actions run ID containing a claude-code-docs-diff artifact"
+        description: "GitHub Actions run ID containing an archive-codex-input artifact"
         required: true
         type: string
 
@@ -48,7 +48,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/docs-diff-artifact"
           gh run download "$RUN_ID" \
-            --name "snapshot-codex-input-${RUN_ID}" \
+            --name "archive-codex-input-${RUN_ID}" \
             --dir "$RUNNER_TEMP/docs-diff-artifact"
 
       - name: Resolve artifact directory
@@ -56,7 +56,7 @@ jobs:
         env:
           RUN_ID: ${{ inputs.run_id }}
         run: |
-          artifact_dir="$RUNNER_TEMP/docs-diff-artifact/snapshot-codex-input-${RUN_ID}"
+          artifact_dir="$RUNNER_TEMP/docs-diff-artifact/archive-codex-input-${RUN_ID}"
 
           if [ ! -d "$artifact_dir" ]; then
             echo "No minimal Codex input artifact found after download." >&2
@@ -79,10 +79,10 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/codex-input"
 
-          cp "$ARTIFACT_DIR/snapshot-status.txt" "$RUNNER_TEMP/codex-input/snapshot-status.txt"
-          cp "$ARTIFACT_DIR/snapshot-diffstat.txt" "$RUNNER_TEMP/codex-input/snapshot-diffstat.txt"
-          cp "$ARTIFACT_DIR/snapshot-sanitized.patch" "$RUNNER_TEMP/codex-input/snapshot-sanitized.patch"
-          cp "$ARTIFACT_DIR/snapshot-context.json" "$RUNNER_TEMP/codex-input/snapshot-context.json"
+          cp "$ARTIFACT_DIR/archive-status.txt" "$RUNNER_TEMP/codex-input/archive-status.txt"
+          cp "$ARTIFACT_DIR/archive-diffstat.txt" "$RUNNER_TEMP/codex-input/archive-diffstat.txt"
+          cp "$ARTIFACT_DIR/archive-sanitized.patch" "$RUNNER_TEMP/codex-input/archive-sanitized.patch"
+          cp "$ARTIFACT_DIR/archive-context.json" "$RUNNER_TEMP/codex-input/archive-context.json"
 
       - name: Run Codex dry run summary
         uses: ./.github/actions/codex-release-generate

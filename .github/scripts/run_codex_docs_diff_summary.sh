@@ -57,35 +57,35 @@ if [ -z "$output_file" ]; then
 fi
 
 for required_file in \
-  "$artifact_dir/snapshot-status.txt" \
-  "$artifact_dir/snapshot-diffstat.txt"; do
+  "$artifact_dir/archive-status.txt" \
+  "$artifact_dir/archive-diffstat.txt"; do
   if [ ! -f "$required_file" ]; then
     echo "missing required file: $required_file" >&2
     exit 1
   fi
 done
 
-isolated_workdir="$(mktemp -d "${TMPDIR:-/tmp}/claudecodedocs-codex-XXXXXX")"
+isolated_workdir="$(mktemp -d "${TMPDIR:-/tmp}/llmstxt-codex-XXXXXX")"
 mkdir -p "$isolated_workdir"
-cp "$artifact_dir/snapshot-status.txt" "$isolated_workdir/"
-cp "$artifact_dir/snapshot-diffstat.txt" "$isolated_workdir/"
-if [ -f "$artifact_dir/snapshot-sanitized.patch" ]; then
-  cp "$artifact_dir/snapshot-sanitized.patch" "$isolated_workdir/"
+cp "$artifact_dir/archive-status.txt" "$isolated_workdir/"
+cp "$artifact_dir/archive-diffstat.txt" "$isolated_workdir/"
+if [ -f "$artifact_dir/archive-sanitized.patch" ]; then
+  cp "$artifact_dir/archive-sanitized.patch" "$isolated_workdir/"
 else
-  perl -0777 -pe 's/<!--.*?-->//gs' "$artifact_dir/snapshot.patch" > "$isolated_workdir/snapshot-sanitized.patch"
+  perl -0777 -pe 's/<!--.*?-->//gs' "$artifact_dir/archive.patch" > "$isolated_workdir/archive-sanitized.patch"
 fi
 
-if [ -f "$artifact_dir/snapshot-context.json" ]; then
-  cp "$artifact_dir/snapshot-context.json" "$isolated_workdir/"
+if [ -f "$artifact_dir/archive-context.json" ]; then
+  cp "$artifact_dir/archive-context.json" "$isolated_workdir/"
 else
-  if [ ! -f "$artifact_dir/snapshot/manifest.json" ]; then
-    echo "missing required file: $artifact_dir/snapshot-context.json (or fallback $artifact_dir/snapshot/manifest.json)" >&2
+  if [ ! -f "$artifact_dir/archive/manifest.json" ]; then
+    echo "missing required file: $artifact_dir/archive-context.json (or fallback $artifact_dir/archive/manifest.json)" >&2
     exit 1
   fi
 
-  document_count="$(jq -r '.document_count // 0' "$artifact_dir/snapshot/manifest.json")"
-  skipped_count="$(jq -r '.skipped_count // 0' "$artifact_dir/snapshot/manifest.json")"
-  failure_count="$(jq -r '.failures | length' "$artifact_dir/snapshot/manifest.json")"
+  document_count="$(jq -r '.document_count // 0' "$artifact_dir/archive/manifest.json")"
+  skipped_count="$(jq -r '.skipped_count // 0' "$artifact_dir/archive/manifest.json")"
+  failure_count="$(jq -r '.failures | length' "$artifact_dir/archive/manifest.json")"
   published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   jq -n \
     --arg repository "local/codex-dry-run" \
@@ -107,7 +107,7 @@ else
       document_count: $document_count,
       skipped_count: $skipped_count,
       failure_count: $failure_count
-    }' > "$isolated_workdir/snapshot-context.json"
+    }' > "$isolated_workdir/archive-context.json"
 fi
 
 cleanup() {

@@ -1,4 +1,4 @@
-// Package main implements the snapshotreadme CLI.
+// Package main implements the readmegen CLI.
 package main
 
 import (
@@ -49,11 +49,11 @@ type templateData struct {
 	Releases      []releaseView
 }
 
-var runSnapshotReadme = run
+var runReadmeGen = run
 
 func main() {
 	cfg := parseFlags()
-	if err := runSnapshotReadme(cfg); err != nil {
+	if err := runReadmeGen(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

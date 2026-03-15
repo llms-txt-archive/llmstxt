@@ -28,7 +28,7 @@ func withReadmeFlagSet(t *testing.T, args []string) {
 
 func TestParseFlagsSuccess(t *testing.T) {
 	withReadmeFlagSet(t, []string{
-		"snapshotreadme",
+		"readmegen",
 		"-template", "/tmp/template.md",
 		"-out", "/tmp/README.md",
 		"-title", "Archive",
@@ -139,9 +139,9 @@ skipped={{ .SkippedCount }}
 	}
 }
 
-func TestMainInvokesRunSnapshotReadme(t *testing.T) {
+func TestMainInvokesRunReadmeGen(t *testing.T) {
 	withReadmeFlagSet(t, []string{
-		"snapshotreadme",
+		"readmegen",
 		"-template", "/tmp/template.md",
 		"-out", "/tmp/README.md",
 		"-title", "Archive",
@@ -152,13 +152,13 @@ func TestMainInvokesRunSnapshotReadme(t *testing.T) {
 		"-releases-json", "/tmp/releases.json",
 	})
 
-	previousRun := runSnapshotReadme
+	previousRun := runReadmeGen
 	t.Cleanup(func() {
-		runSnapshotReadme = previousRun
+		runReadmeGen = previousRun
 	})
 
 	called := false
-	runSnapshotReadme = func(cfg config) error {
+	runReadmeGen = func(cfg config) error {
 		called = true
 		if cfg.title != "Archive" {
 			t.Fatalf("main() title = %q", cfg.title)
@@ -169,6 +169,6 @@ func TestMainInvokesRunSnapshotReadme(t *testing.T) {
 	main()
 
 	if !called {
-		t.Fatal("main() did not invoke runSnapshotReadme")
+		t.Fatal("main() did not invoke runReadmeGen")
 	}
 }

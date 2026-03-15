@@ -1,4 +1,4 @@
-name: Snapshot Sync
+name: Archive Sync
 
 on:
   workflow_call:
@@ -39,7 +39,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: snapshot-sync-${{ github.repository }}-${{ github.ref_name }}
+  group: archive-sync-${{ github.repository }}-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -51,7 +51,7 @@ jobs:
       CODEX_EFFORT: ${{ vars.CODEX_EFFORT || 'high' }}
 
     steps:
-      - name: Check out snapshot repository
+      - name: Check out archive repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -77,12 +77,12 @@ jobs:
         run: |
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           go install ./cmd/crawler
-          go install ./cmd/snapshotreadme
+          go install ./cmd/readmegen
         working-directory: .toolrepo
 
       - name: Copy workflow assets from tool repo
         run: |
-          cp .toolrepo/templates/snapshot-readme.md.tmpl "$RUNNER_TEMP/snapshot-readme.md.tmpl"
+          cp .toolrepo/templates/readme.md.tmpl "$RUNNER_TEMP/readme.md.tmpl"
           cp .toolrepo/.github/codex/prompts/docs-diff-summary.md "$RUNNER_TEMP/codex-docs-diff-summary.md"
           cp .toolrepo/.github/scripts/validate_codex_release.py "$RUNNER_TEMP/validate_codex_release.py"
           cp .toolrepo/.github/scripts/emit_codex_release_outputs.py "$RUNNER_TEMP/emit_codex_release_outputs.py"
@@ -146,7 +146,7 @@ jobs:
         if: steps.crawl.outputs.exit_code != '0' || steps.crawl.outputs.failure_count != '0'
         uses: actions/upload-artifact@v4
         with:
-          name: snapshot-sync-diagnostics-${{ github.run_id }}
+          name: archive-sync-diagnostics-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/crawl.stdout
             ${{ runner.temp }}/crawl.stderr
@@ -200,7 +200,7 @@ jobs:
           else
             codex_enabled="true"
             timestamp="$(date -u +"%Y%m%dT%H%M%SZ")"
-            release_tag="snapshot-${timestamp}"
+            release_tag="archive-${timestamp}"
           fi
 
           release_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
@@ -222,10 +222,10 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/codex-input"
 
-          git status --porcelain -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot-status.txt"
-          git diff --stat -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/snapshot-diffstat.txt"
+          git status --porcelain -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/archive-status.txt"
+          git diff --stat -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' > "$RUNNER_TEMP/codex-input/archive-diffstat.txt"
           git diff -- . ':(exclude).github' ':(exclude)README.md' ':(exclude).toolrepo' \
-            | perl -0777 -pe 's/<!--.*?-->//gs' > "$RUNNER_TEMP/codex-input/snapshot-sanitized.patch"
+            | perl -0777 -pe 's/<!--.*?-->//gs' > "$RUNNER_TEMP/codex-input/archive-sanitized.patch"
 
           document_count="$(jq -r '.document_count' "$RUNNER_TEMP/manifest.json")"
           skipped_count="$(jq -r '.skipped_count // 0' "$RUNNER_TEMP/manifest.json")"
@@ -251,18 +251,18 @@ jobs:
               document_count: $document_count,
               skipped_count: $skipped_count,
               failure_count: $failure_count
-            }' > "$RUNNER_TEMP/codex-input/snapshot-context.json"
+            }' > "$RUNNER_TEMP/codex-input/archive-context.json"
 
       - name: Upload Codex input bundle
         if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: snapshot-codex-input-${{ github.run_id }}
+          name: archive-codex-input-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/codex-input/snapshot-status.txt
-            ${{ runner.temp }}/codex-input/snapshot-diffstat.txt
-            ${{ runner.temp }}/codex-input/snapshot-sanitized.patch
-            ${{ runner.temp }}/codex-input/snapshot-context.json
+            ${{ runner.temp }}/codex-input/archive-status.txt
+            ${{ runner.temp }}/codex-input/archive-diffstat.txt
+            ${{ runner.temp }}/codex-input/archive-sanitized.patch
+            ${{ runner.temp }}/codex-input/archive-context.json
 
       - name: Validate Codex configuration
         if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
@@ -270,7 +270,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
-            echo "OPENAI_API_KEY is required for non-initial snapshot releases." >&2
+            echo "OPENAI_API_KEY is required for non-initial archive releases." >&2
             exit 1
           fi
 
@@ -291,7 +291,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true' && steps.release_envelope.outputs.codex_enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: snapshot-codex-output-${{ github.run_id }}
+          name: archive-codex-output-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/codex-docs-summary.json
             ${{ runner.temp }}/codex-commit-title.txt
@@ -315,10 +315,10 @@ jobs:
             release_name="$(cat "$RUNNER_TEMP/codex-release-title.txt")"
             cp "$RUNNER_TEMP/codex-release-notes.md" "$release_notes_path"
           else
-            commit_subject="initial snapshot"
+            commit_subject="initial archive"
             commit_body=""
             release_name="Initial release"
-            printf '## Summary\n\nInitial automated snapshot release.\n' > "$release_notes_path"
+            printf '## Summary\n\nInitial automated archive release.\n' > "$release_notes_path"
           fi
 
           {
@@ -365,8 +365,8 @@ jobs:
           document_count="$(jq -r '.document_count' "$RUNNER_TEMP/manifest.json")"
           skipped_count="$(jq -r '.skipped_count // 0' "$RUNNER_TEMP/manifest.json")"
 
-          snapshotreadme \
-            -template "$RUNNER_TEMP/snapshot-readme.md.tmpl" \
+          readmegen \
+            -template "$RUNNER_TEMP/readme.md.tmpl" \
             -out "README.md" \
             -title "$REPO_TITLE" \
             -site-name "$SITE_NAME" \
@@ -383,7 +383,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit snapshot update
+      - name: Commit archive update
         if: steps.detect.outputs.changed == 'true'
         env:
           COMMIT_MESSAGE_PATH: ${{ steps.release_meta.outputs.commit_message_path }}
@@ -391,7 +391,7 @@ jobs:
           git add -A -- . ':(exclude).github' ':(exclude).toolrepo'
           git commit -F "$COMMIT_MESSAGE_PATH"
 
-      - name: Push snapshot update
+      - name: Push archive update
         if: steps.detect.outputs.changed == 'true'
         run: git push origin "HEAD:${GITHUB_REF_NAME}"
 

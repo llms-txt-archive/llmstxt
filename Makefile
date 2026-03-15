@@ -3,7 +3,7 @@
 # Build both binaries
 build:
 	go build -o bin/crawler ./cmd/crawler
-	go build -o bin/snapshotreadme ./cmd/snapshotreadme
+	go build -o bin/readmegen ./cmd/readmegen
 
 # Run tests with race detector
 test:

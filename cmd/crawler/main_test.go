@@ -18,10 +18,10 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	apppkg "claudecodedocs/internal/app"
-	fetchpkg "claudecodedocs/internal/fetch"
-	linkspkg "claudecodedocs/internal/links"
-	stagepkg "claudecodedocs/internal/stage"
+	apppkg "github.com/f-pisani/llmstxt/internal/app"
+	fetchpkg "github.com/f-pisani/llmstxt/internal/fetch"
+	linkspkg "github.com/f-pisani/llmstxt/internal/links"
+	stagepkg "github.com/f-pisani/llmstxt/internal/stage"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -104,7 +104,7 @@ func withTestFlagSet(t *testing.T, args []string) {
 
 func TestParseFlagsUsesDefaults(t *testing.T) {
 	withTestFlagSet(t, []string{
-		"claudecodedocs",
+		"crawler",
 		"-source", "https://docs.example.com/llms.txt",
 		"-out", filepath.Join(t.TempDir(), "snapshot"),
 		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
@@ -128,14 +128,14 @@ func TestParseFlagsUsesDefaults(t *testing.T) {
 	if cfg.Concurrency != defaultWorkers {
 		t.Fatalf("parseFlags() concurrency = %d, want %d", cfg.Concurrency, defaultWorkers)
 	}
-	if cfg.SnapshotRoot != wd {
-		t.Fatalf("parseFlags() snapshot_root = %q, want %q", cfg.SnapshotRoot, wd)
+	if cfg.ArchiveRoot != wd {
+		t.Fatalf("parseFlags() snapshot_root = %q, want %q", cfg.ArchiveRoot, wd)
 	}
 }
 
 func TestParseFlagsNormalizesConcurrencyFloor(t *testing.T) {
 	withTestFlagSet(t, []string{
-		"claudecodedocs",
+		"crawler",
 		"-source", "https://docs.example.com/llms.txt",
 		"-out", filepath.Join(t.TempDir(), "snapshot"),
 		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
@@ -154,7 +154,7 @@ func TestParseFlagsNormalizesConcurrencyFloor(t *testing.T) {
 
 func TestMainInvokesRunApp(t *testing.T) {
 	withTestFlagSet(t, []string{
-		"claudecodedocs",
+		"crawler",
 		"-source", "https://docs.example.com/llms.txt",
 		"-out", filepath.Join(t.TempDir(), "snapshot"),
 		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
@@ -726,9 +726,9 @@ func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
 }
 
 func TestFetchDocumentUsesCachedFileOn304(t *testing.T) {
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 	relativePath := filepath.Join("docs", "en", "overview.md")
-	fullPath := filepath.Join(snapshotRoot, relativePath)
+	fullPath := filepath.Join(archiveRoot, relativePath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
 	}
@@ -756,7 +756,7 @@ func TestFetchDocumentUsesCachedFileOn304(t *testing.T) {
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
 		t.TempDir(),
-		snapshotRoot,
+		archiveRoot,
 		"https://docs.example.com/docs/en/overview.md",
 		relativePath,
 		manifestEntry{
@@ -830,9 +830,9 @@ func TestFetchDocumentRefetchesOn304CacheMiss(t *testing.T) {
 }
 
 func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 	relativePath := filepath.Join("docs", "en", "overview.md")
-	fullPath := filepath.Join(snapshotRoot, relativePath)
+	fullPath := filepath.Join(archiveRoot, relativePath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
 	}
@@ -866,7 +866,7 @@ func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
 		t.TempDir(),
-		snapshotRoot,
+		archiveRoot,
 		"https://docs.example.com/docs/en/overview.md",
 		relativePath,
 		manifestEntry{
@@ -893,9 +893,9 @@ func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
 }
 
 func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 	sourcePath := sourcePathForLayout(layoutRoot)
-	fullPath := filepath.Join(snapshotRoot, sourcePath)
+	fullPath := filepath.Join(archiveRoot, sourcePath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
 	}
@@ -921,7 +921,7 @@ func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
 		t.TempDir(),
-		snapshotRoot,
+		archiveRoot,
 		"https://docs.example.com/llms.txt",
 		sourcePath,
 		manifestEntry{
@@ -944,7 +944,7 @@ func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
 	}
 }
 
-func TestPreservePreviousDocumentUsesExistingSnapshotCopy(t *testing.T) {
+func TestPreservePreviousDocumentUsesExistingArchiveCopy(t *testing.T) {
 	tempDir := t.TempDir()
 	body := []byte("# Cached markdown\n")
 	targetPath := filepath.Join(tempDir, "docs", "en", "overview.md")
@@ -992,7 +992,7 @@ func TestPreservePreviousDocumentUsesExistingSnapshotCopy(t *testing.T) {
 	}
 }
 
-func TestPreservePreviousDocumentRequiresPreviousSnapshotEntry(t *testing.T) {
+func TestPreservePreviousDocumentRequiresPreviousArchiveEntry(t *testing.T) {
 	_, err := preservePreviousDocument(
 		t.TempDir(),
 		"https://example.com/docs/en/overview.md",
@@ -1046,9 +1046,9 @@ func TestSafeJoinRejectsEscapingPath(t *testing.T) {
 func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 	withoutRetrySleep(t)
 
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 	cachedBody := []byte("# Previous snapshot\n")
-	targetPath := filepath.Join(snapshotRoot, "docs", "en", "skills.md")
+	targetPath := filepath.Join(archiveRoot, "docs", "en", "skills.md")
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
 	}
@@ -1080,7 +1080,7 @@ func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 		layoutRoot,
 		filepath.Join(t.TempDir(), "diagnostics"),
 		t.TempDir(),
-		snapshotRoot,
+		archiveRoot,
 		[]string{"https://docs.example.com/docs/en/skills.md"},
 		1,
 		previous,
@@ -1106,9 +1106,9 @@ func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 	withoutRetrySleep(t)
 
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 	cachedBody := []byte("# Previous snapshot\n")
-	targetPath := filepath.Join(snapshotRoot, "docs", "en", "skills.md")
+	targetPath := filepath.Join(archiveRoot, "docs", "en", "skills.md")
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
 	}
@@ -1145,7 +1145,7 @@ func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 		layoutRoot,
 		filepath.Join(t.TempDir(), "diagnostics-one"),
 		t.TempDir(),
-		snapshotRoot,
+		archiveRoot,
 		[]string{"https://docs.example.com/docs/en/skills.md"},
 		1,
 		previous,
@@ -1164,7 +1164,7 @@ func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 		layoutRoot,
 		filepath.Join(t.TempDir(), "diagnostics-two"),
 		t.TempDir(),
-		snapshotRoot,
+		archiveRoot,
 		[]string{"https://docs.example.com/docs/en/skills.md"},
 		1,
 		previous,
@@ -1218,7 +1218,7 @@ func TestReconcileStageStateRestoresBackupFromJournal(t *testing.T) {
 	root := t.TempDir()
 	outputDir := filepath.Join(root, "snapshot")
 	backupDir := outputDir + ".bak"
-	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+	tempDir := filepath.Join(root, ".llmstxt-staged")
 
 	if err := os.MkdirAll(backupDir, 0o750); err != nil {
 		t.Fatalf("os.MkdirAll(backup) error = %v", err)
@@ -1259,7 +1259,7 @@ func TestReconcileStageStateRestoresBackupFromJournal(t *testing.T) {
 func TestReconcileStageStatePromotesCompletedTempFromJournal(t *testing.T) {
 	root := t.TempDir()
 	outputDir := filepath.Join(root, "snapshot")
-	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+	tempDir := filepath.Join(root, ".llmstxt-staged")
 
 	if err := os.MkdirAll(tempDir, 0o750); err != nil {
 		t.Fatalf("os.MkdirAll(temp) error = %v", err)
@@ -1298,7 +1298,7 @@ func TestReconcileStageStateRemovesStaleArtifactsWhenOutputExists(t *testing.T) 
 	root := t.TempDir()
 	outputDir := filepath.Join(root, "snapshot")
 	backupDir := outputDir + ".bak"
-	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+	tempDir := filepath.Join(root, ".llmstxt-staged")
 
 	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		t.Fatalf("os.MkdirAll(output) error = %v", err)
@@ -1339,7 +1339,7 @@ func TestReconcileStageStateRemovesStaleArtifactsWhenOutputExists(t *testing.T) 
 func TestReconcileStageStateRemovesIncompleteTempFromJournal(t *testing.T) {
 	root := t.TempDir()
 	outputDir := filepath.Join(root, "snapshot")
-	tempDir := filepath.Join(root, ".claudecodedocs-staged")
+	tempDir := filepath.Join(root, ".llmstxt-staged")
 
 	if err := os.MkdirAll(tempDir, 0o750); err != nil {
 		t.Fatalf("os.MkdirAll(temp) error = %v", err)
@@ -1473,7 +1473,7 @@ func TestRecursiveDiscovery(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, err := extractLinks([]byte(rootBody))
 	if err != nil {
@@ -1482,7 +1482,7 @@ func TestRecursiveDiscovery(t *testing.T) {
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1519,7 +1519,7 @@ func TestRecursiveDiscoveryCyclePrevention(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	// Start from root which links to /a/llms.txt.
 	rootBody := "- [A](https://example.com/a/llms.txt)\n"
@@ -1527,7 +1527,7 @@ func TestRecursiveDiscoveryCyclePrevention(t *testing.T) {
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1552,13 +1552,13 @@ func TestRecursiveDiscoveryCrossHostBlocked(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, _ := extractLinks([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1594,13 +1594,13 @@ func TestRecursiveDiscoveryEmptyNestedIndex(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, _ := extractLinks([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1634,13 +1634,13 @@ func TestRecursiveDiscoveryNestedFetchFailure(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, _ := extractLinks([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1677,13 +1677,13 @@ func TestRecursiveDiscoveryDocDedup(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, _ := extractLinks([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1708,7 +1708,7 @@ func TestRecursiveDiscoveryContextCancellation(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately before discovery.
@@ -1717,7 +1717,7 @@ func TestRecursiveDiscoveryContextCancellation(t *testing.T) {
 
 	result, err := apppkg.DiscoverDocuments(
 		ctx, "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1747,13 +1747,13 @@ func TestRecursiveDiscoveryIndexCap(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, _ := extractLinks([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1799,7 +1799,7 @@ func TestRecursiveDiscoveryWithFixtures(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, err := extractLinks(rootBody)
 	if err != nil {
@@ -1808,7 +1808,7 @@ func TestRecursiveDiscoveryWithFixtures(t *testing.T) {
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1862,13 +1862,13 @@ func TestRecursiveDiscoveryFragmentDedup(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, _ := extractLinks([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {
@@ -1901,13 +1901,13 @@ func TestRecursiveDiscoveryEmptyNestedIndexSkipReason(t *testing.T) {
 
 	pol := mustPolicy(t, "https://example.com/llms.txt", "")
 	spoolDir := t.TempDir()
-	snapshotRoot := t.TempDir()
+	archiveRoot := t.TempDir()
 
 	extractedLinks, _ := extractLinks([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, SnapshotRoot: snapshotRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
 		},
 	)
 	if err != nil {

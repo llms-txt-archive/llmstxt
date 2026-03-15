@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"claudecodedocs/internal/fetch"
-	"claudecodedocs/internal/links"
-	"claudecodedocs/internal/manifest"
-	"claudecodedocs/internal/policy"
-	"claudecodedocs/internal/stage"
+	"github.com/f-pisani/llmstxt/internal/fetch"
+	"github.com/f-pisani/llmstxt/internal/links"
+	"github.com/f-pisani/llmstxt/internal/manifest"
+	"github.com/f-pisani/llmstxt/internal/policy"
+	"github.com/f-pisani/llmstxt/internal/stage"
 
 	"golang.org/x/time/rate"
 )
@@ -34,7 +34,7 @@ type Config struct {
 	ManifestOut          string
 	DiagnosticsDir       string
 	AllowedHostsCSV      string
-	SnapshotRoot         string
+	ArchiveRoot         string
 	RateLimit            float64
 	Timeout              time.Duration
 	Concurrency          int
@@ -163,7 +163,7 @@ type DiscoveryConfig struct {
 	Client       *http.Client
 	URLPolicy    *policy.URLPolicy
 	SpoolDir     string
-	SnapshotRoot string
+	ArchiveRoot string
 	Layout       string
 	PreviousDocs map[string]manifest.Entry
 	Logger       *slog.Logger
@@ -224,7 +224,7 @@ func processIndex(
 		}
 	}
 
-	fetchResult, fetchErr := fetch.Document(ctx, cfg.Client, cfg.URLPolicy, cfg.SpoolDir, cfg.SnapshotRoot, rawURL, relativePath, previous, nil)
+	fetchResult, fetchErr := fetch.Document(ctx, cfg.Client, cfg.URLPolicy, cfg.SpoolDir, cfg.ArchiveRoot, rawURL, relativePath, previous, nil)
 	if fetchErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", fetchErr)
 		skipEntry(skipped, rawURL, "fetch failed", fetchErr)
@@ -339,7 +339,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	client := policy.NewHTTPClient(cfg.Timeout, urlPolicy)
 
-	spoolDir, err := os.MkdirTemp("", ".claudecodedocs-fetch-*")
+	spoolDir, err := os.MkdirTemp("", ".llmstxt-fetch-*")
 	if err != nil {
 		return fmt.Errorf("create fetch spool directory: %w", err)
 	}
@@ -356,7 +356,7 @@ func Run(ctx context.Context, cfg Config) error {
 	sourcePath := links.SourcePath(cfg.Layout)
 	sourcePrevious := manifest.PreviousSourceEntry(previousManifest, sourcePath)
 
-	sourceResult, err := fetch.Document(ctx, client, urlPolicy, spoolDir, cfg.SnapshotRoot, cfg.SourceURL, sourcePath, sourcePrevious, nil)
+	sourceResult, err := fetch.Document(ctx, client, urlPolicy, spoolDir, cfg.ArchiveRoot, cfg.SourceURL, sourcePath, sourcePrevious, nil)
 	if err != nil {
 		failures := []manifest.FetchFailure{fetch.BuildFetchFailure(cfg.DiagnosticsDir, cfg.SourceURL, sourcePath, err)}
 		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, nil, nil, nil, failures))
@@ -381,7 +381,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Client:       client,
 		URLPolicy:    urlPolicy,
 		SpoolDir:     spoolDir,
-		SnapshotRoot: cfg.SnapshotRoot,
+		ArchiveRoot: cfg.ArchiveRoot,
 		Layout:       cfg.Layout,
 		PreviousDocs: previousDocuments,
 		Logger:       cfg.Logger,
@@ -410,7 +410,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Layout:            cfg.Layout,
 		DiagnosticsDir:    cfg.DiagnosticsDir,
 		SpoolDir:          spoolDir,
-		SnapshotRoot:      cfg.SnapshotRoot,
+		ArchiveRoot:      cfg.ArchiveRoot,
 		Concurrency:       cfg.Concurrency,
 		RateLimiter:       limiter,
 		PreviousDocuments: previousDocuments,

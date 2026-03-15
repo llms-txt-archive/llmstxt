@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"claudecodedocs/internal/links"
-	"claudecodedocs/internal/manifest"
-	"claudecodedocs/internal/policy"
+	"github.com/f-pisani/llmstxt/internal/links"
+	"github.com/f-pisani/llmstxt/internal/manifest"
+	"github.com/f-pisani/llmstxt/internal/policy"
 
 	"golang.org/x/time/rate"
 )
@@ -34,7 +34,7 @@ const (
 )
 
 // ErrNoPreviousEntry is returned when no previous manifest entry exists for a document.
-var ErrNoPreviousEntry = errors.New("no previous snapshot entry")
+var ErrNoPreviousEntry = errors.New("no previous archive entry")
 
 // Result holds the outcome of fetching a single URL.
 type Result struct {
@@ -60,7 +60,7 @@ type Options struct {
 	Layout            string
 	DiagnosticsDir    string
 	SpoolDir          string
-	SnapshotRoot      string
+	ArchiveRoot      string
 	Concurrency       int
 	PreviousDocuments map[string]manifest.Entry
 	// RateLimiter controls the rate of outbound HTTP requests. Nil means no limit.
@@ -149,7 +149,7 @@ func Documents(ctx context.Context, docURLs []string, opts Options) ([]Result, [
 
 					if err := opts.URLPolicy.Validate(job.url); err != nil {
 						failure := manifest.FetchFailure{URL: job.url, Error: err.Error()}
-						preserved, preservedErr := PreservePreviousDocument(opts.SnapshotRoot, job.url, relativePath, previous)
+						preserved, preservedErr := PreservePreviousDocument(opts.ArchiveRoot, job.url, relativePath, previous)
 						if preservedErr == nil {
 							failure.PreservedExisting = true
 							mu.Lock()
@@ -164,10 +164,10 @@ func Documents(ctx context.Context, docURLs []string, opts Options) ([]Result, [
 						continue
 					}
 
-					result, err := Document(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.SnapshotRoot, job.url, relativePath, previous, opts.retrySleep())
+					result, err := Document(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.ArchiveRoot, job.url, relativePath, previous, opts.retrySleep())
 					if err != nil {
 						failure := BuildFetchFailure(opts.DiagnosticsDir, job.url, relativePath, err)
-						preserved, preservedErr := PreservePreviousDocument(opts.SnapshotRoot, job.url, relativePath, previous)
+						preserved, preservedErr := PreservePreviousDocument(opts.ArchiveRoot, job.url, relativePath, previous)
 						if preservedErr == nil {
 							failure.PreservedExisting = true
 							mu.Lock()
@@ -227,7 +227,7 @@ func Document(
 	client *http.Client,
 	urlPolicy *policy.URLPolicy,
 	spoolDir string,
-	snapshotRoot string,
+	archiveRoot string,
 	rawURL string,
 	relativePath string,
 	previous manifest.Entry,
@@ -268,7 +268,7 @@ func Document(
 		}
 
 		if response.NotModified {
-			cachedResult, cacheErr := LoadCachedDocument(snapshotRoot, rawURL, relativePath, previous, response)
+			cachedResult, cacheErr := LoadCachedDocument(archiveRoot, rawURL, relativePath, previous, response)
 			if cacheErr == nil {
 				return cachedResult, nil
 			}

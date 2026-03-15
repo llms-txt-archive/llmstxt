@@ -1,4 +1,4 @@
-// Package main implements the claudecodedocs CLI.
+// Package main implements the llmstxt crawler CLI.
 package main
 
 import (
@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"claudecodedocs/internal/app"
-	"claudecodedocs/internal/links"
+	"github.com/f-pisani/llmstxt/internal/app"
+	"github.com/f-pisani/llmstxt/internal/links"
 )
 
 const (
@@ -83,7 +83,7 @@ func parseFlags() app.Config {
 		fmt.Fprintf(os.Stderr, "resolve current working directory: %v\n", err)
 		os.Exit(1)
 	}
-	cfg.SnapshotRoot = wd
+	cfg.ArchiveRoot = wd
 
 	return cfg
 }

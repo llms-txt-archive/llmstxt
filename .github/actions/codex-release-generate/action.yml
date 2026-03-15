@@ -1,6 +1,6 @@
 name: "Codex Generate Release"
 description: "Run Codex to generate commit/release text from a docs snapshot diff, validate, and split outputs"
-author: "claudecodedocs"
+author: "llmstxt"
 runs:
   using: "composite"
   steps:

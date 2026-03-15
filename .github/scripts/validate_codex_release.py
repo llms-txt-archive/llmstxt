@@ -26,8 +26,8 @@ FORBIDDEN_SUFFIXES = {
 PLACEHOLDER_PHRASES = (
     "in progress",
     "analysis in progress",
-    "inspect snapshot diff inputs",
-    "snapshot diff analysis",
+    "inspect archive diff inputs",
+    "archive diff analysis",
 )
 META_CONTROL_PHRASES = (
     "ignore previous instructions",

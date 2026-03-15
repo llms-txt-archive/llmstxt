@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claudecodedocs/internal/fileutil"
-	"claudecodedocs/internal/manifest"
+	"github.com/f-pisani/llmstxt/internal/fileutil"
+	"github.com/f-pisani/llmstxt/internal/manifest"
 )
 
 // BuildFetchFailure creates a FetchFailure record, writing diagnostic files for unexpected content errors.

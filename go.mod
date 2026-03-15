@@ -1,4 +1,4 @@
-module claudecodedocs
+module github.com/f-pisani/llmstxt
 
 go 1.25.0
 

@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"claudecodedocs/internal/manifest"
+	"github.com/f-pisani/llmstxt/internal/manifest"
 )
 
 const (

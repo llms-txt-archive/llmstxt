@@ -4,18 +4,18 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"claudecodedocs/internal/manifest"
+	"github.com/f-pisani/llmstxt/internal/manifest"
 )
 
 // PreservePreviousDocument returns a Result backed by an existing snapshot file when a fresh fetch fails.
-func PreservePreviousDocument(snapshotRoot string, rawURL string, relativePath string, previous manifest.Entry) (Result, error) {
+func PreservePreviousDocument(archiveRoot string, rawURL string, relativePath string, previous manifest.Entry) (Result, error) {
 	if previous.Path == "" {
 		return Result{}, ErrNoPreviousEntry
 	}
 
 	previousPath := previous.Path
 
-	localPath, sha256Value, bytesCount, err := SummarizeExistingFile(snapshotRoot, previousPath)
+	localPath, sha256Value, bytesCount, err := SummarizeExistingFile(archiveRoot, previousPath)
 	if err != nil {
 		return Result{}, err
 	}
@@ -35,8 +35,8 @@ func PreservePreviousDocument(snapshotRoot string, rawURL string, relativePath s
 }
 
 // LoadCachedDocument builds a Result from a previously cached file after a 304 Not Modified response.
-func LoadCachedDocument(snapshotRoot string, rawURL string, relativePath string, previous manifest.Entry, response HTTPResponse) (Result, error) {
-	localPath, sha256Value, bytesCount, err := SummarizeExistingFile(snapshotRoot, filepath.ToSlash(relativePath))
+func LoadCachedDocument(archiveRoot string, rawURL string, relativePath string, previous manifest.Entry, response HTTPResponse) (Result, error) {
+	localPath, sha256Value, bytesCount, err := SummarizeExistingFile(archiveRoot, filepath.ToSlash(relativePath))
 	if err != nil {
 		return Result{}, err
 	}

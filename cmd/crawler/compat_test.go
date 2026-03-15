@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"time"
 
-	apppkg "claudecodedocs/internal/app"
-	fetchpkg "claudecodedocs/internal/fetch"
-	linkspkg "claudecodedocs/internal/links"
-	manifestpkg "claudecodedocs/internal/manifest"
-	policypkg "claudecodedocs/internal/policy"
-	stagepkg "claudecodedocs/internal/stage"
+	apppkg "github.com/f-pisani/llmstxt/internal/app"
+	fetchpkg "github.com/f-pisani/llmstxt/internal/fetch"
+	linkspkg "github.com/f-pisani/llmstxt/internal/links"
+	manifestpkg "github.com/f-pisani/llmstxt/internal/manifest"
+	policypkg "github.com/f-pisani/llmstxt/internal/policy"
+	stagepkg "github.com/f-pisani/llmstxt/internal/stage"
 )
 
 const (
@@ -147,12 +147,12 @@ func buildDiagnosticManifest(sourceURL string, sourcePath string, source *fetchR
 	return apppkg.BuildDiagnosticManifest(sourceURL, sourcePath, source, documents, skipped, failures)
 }
 
-func fetchDocument(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, spoolDir string, snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
-	return fetchpkg.Document(ctx, client, urlPolicy, spoolDir, snapshotRoot, rawURL, relativePath, previous, nil)
+func fetchDocument(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, spoolDir string, archiveRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
+	return fetchpkg.Document(ctx, client, urlPolicy, spoolDir, archiveRoot, rawURL, relativePath, previous, nil)
 }
 
-func preservePreviousDocument(snapshotRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
-	return fetchpkg.PreservePreviousDocument(snapshotRoot, rawURL, relativePath, previous)
+func preservePreviousDocument(archiveRoot string, rawURL string, relativePath string, previous manifestEntry) (fetchResult, error) {
+	return fetchpkg.PreservePreviousDocument(archiveRoot, rawURL, relativePath, previous)
 }
 
 func hashBytes(body []byte) string {
@@ -163,14 +163,14 @@ func safeJoin(root string, relativePath string) (string, error) {
 	return fetchpkg.SafeJoin(root, relativePath)
 }
 
-func fetchDocuments(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, layout string, diagnosticsDir string, spoolDir string, snapshotRoot string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
+func fetchDocuments(ctx context.Context, client *http.Client, urlPolicy *urlPolicy, layout string, diagnosticsDir string, spoolDir string, archiveRoot string, docURLs []string, concurrency int, previousDocuments map[string]manifestEntry) ([]fetchResult, []fetchFailure) {
 	return fetchpkg.Documents(ctx, docURLs, fetchpkg.Options{
 		Client:            client,
 		URLPolicy:         urlPolicy,
 		Layout:            layout,
 		DiagnosticsDir:    diagnosticsDir,
 		SpoolDir:          spoolDir,
-		SnapshotRoot:      snapshotRoot,
+		ArchiveRoot:       archiveRoot,
 		Concurrency:       concurrency,
 		PreviousDocuments: previousDocuments,
 	})

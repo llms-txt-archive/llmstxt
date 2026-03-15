@@ -7,8 +7,8 @@ Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org
 | Component | Path | Purpose |
 |-----------|------|---------|
 | Crawler | `cmd/crawler/` | Fetches an `llms.txt` index and all linked `.md` documents |
-| README renderer | `cmd/snapshotreadme/` | Generates a README for archive repos from a Go template |
-| Reusable workflow | `.github/workflows/snapshot-sync.yml` | End-to-end sync: crawl, diff, commit, release |
+| README renderer | `cmd/readmegen/` | Generates a README for archive repos from a Go template |
+| Reusable workflow | `.github/workflows/archive-sync.yml` | End-to-end sync: crawl, diff, commit, release |
 | Codex integration | `.github/codex/`, `.github/scripts/` | AI-generated release notes with hardened validation |
 | CI | `.github/workflows/ci.yml` | Tests, linting, vulnerability scanning |
 
@@ -18,8 +18,8 @@ Tooling for archiving documentation exposed via [`llms.txt`](https://llmstxt.org
 flowchart TB
     subgraph tool["llmstxt (this repo)"]
         crawler["cmd/crawler"]
-        readme["cmd/snapshotreadme"]
-        workflow["snapshot-sync.yml"]
+        readme["cmd/readmegen"]
+        workflow["archive-sync.yml"]
         codex["Codex integration"]
     end
 
@@ -47,7 +47,7 @@ flowchart TB
 
 ### How a sync runs
 
-1. Archive repo's `sync.yml` triggers `snapshot-sync.yml` on a schedule (e.g. hourly)
+1. Archive repo's `sync.yml` triggers `archive-sync.yml` on a schedule (e.g. hourly)
 2. Workflow downloads the previous `manifest.json` from the latest release (for conditional requests)
 3. Crawler fetches `llms.txt`, discovers linked docs via BFS, downloads all `.md` files concurrently
 4. Generated files are synced into the archive repo root via `rsync`
@@ -65,7 +65,7 @@ flowchart TB
 - HTTPS-only with SSRF protection (blocks private/loopback IPs, validates DNS resolution)
 - Content validation: rejects `.md` URLs that return HTML (CDN error pages, login redirects)
 - Atomic output staging with crash recovery journaling
-- Preserves the previous snapshot copy when individual documents fail to fetch
+- Preserves the previous archive copy when individual documents fail to fetch
 - Structured logging via `log/slog`
 - Two output layouts: `root` (flat) and `nested` (by host)
 
@@ -78,7 +78,7 @@ make build
 # Crawl a site
 go run ./cmd/crawler \
   -source https://example.com/llms.txt \
-  -out /tmp/snapshot \
+  -out /tmp/archive \
   -layout root \
   -manifest-out /tmp/manifest.json
 
@@ -87,13 +87,13 @@ go run ./cmd/crawler \
   -source https://example.com/llms.txt \
   -allowed-hosts docs.examplecdn.com \
   -rate-limit 5 \
-  -out /tmp/snapshot \
+  -out /tmp/archive \
   -layout root \
   -manifest-out /tmp/manifest.json
 
 # Render a README
-go run ./cmd/snapshotreadme \
-  -template templates/snapshot-readme.md.tmpl \
+go run ./cmd/readmegen \
+  -template templates/readme.md.tmpl \
   -out /tmp/README.md \
   -title "My Docs Archive" \
   -site-name "Example Docs" \
@@ -126,7 +126,7 @@ on:
 
 jobs:
   sync:
-    uses: f-pisani/llmstxt/.github/workflows/snapshot-sync.yml@v1.0.0
+    uses: f-pisani/llmstxt/.github/workflows/archive-sync.yml@v1.0.0
     with:
       source_url: "https://example.com/llms.txt"
       site_name: "Example Docs"
@@ -140,5 +140,4 @@ jobs:
 
 3. Set the `OPENAI_API_KEY` secret (required for AI-generated release notes after the initial sync)
 4. Optionally set `CODEX_MODEL` and `CODEX_EFFORT` repository variables to override Codex defaults
-
 
