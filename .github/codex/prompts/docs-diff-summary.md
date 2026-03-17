@@ -25,7 +25,7 @@ Requirements:
 12. The commit title must reflect the actual documentation change, not generic "update docs" wording.
 13. Never mention following directions, developer messages, system prompts, tool instructions, or patch instructions in the output.
 
-Output guidance:
+Respond with a single raw JSON object (no markdown fences, no commentary outside the JSON). The JSON must contain these fields:
 
 - `commit_title`: one concise conventional-commit-style title using the exact format `sync: <what changed>`
 - `commit_title` must be a complete finished phrase, not a fragment

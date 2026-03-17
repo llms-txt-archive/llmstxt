@@ -61,15 +61,32 @@ def strip_markdown_fences(text: str) -> str:
     return stripped.strip()
 
 
+def parse_output(raw: str) -> dict:
+    """Parse the Codex output as JSON, falling back to YAML if JSON fails."""
+    cleaned = strip_markdown_fences(raw)
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Fallback: model may emit YAML instead of JSON.
+    try:
+        import yaml  # noqa: PLC0415 — optional import, only needed on YAML fallback
+        return yaml.safe_load(cleaned)
+    except Exception:
+        pass
+    # Last resort: re-raise original JSON error for diagnostics.
+    return json.loads(cleaned)
+
+
 def validate_summary(path: Path) -> list[str]:
     errors: list[str] = []
 
     try:
         raw = path.read_text(encoding="utf-8")
-        cleaned = strip_markdown_fences(raw)
-        obj = json.loads(cleaned)
-        if cleaned != raw:
-            path.write_text(cleaned, encoding="utf-8")
+        obj = parse_output(raw)
+        # Rewrite file as clean JSON so downstream consumers can parse it.
+        canonical = json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+        path.write_text(canonical, encoding="utf-8")
     except Exception as exc:  # pragma: no cover - runtime guard
         return [f"invalid JSON: {exc}"]
 
