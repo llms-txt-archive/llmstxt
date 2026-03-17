@@ -50,11 +50,26 @@ META_CONTROL_PHRASES = (
 )
 
 
+def strip_markdown_fences(text: str) -> str:
+    """Remove markdown code fences (```json ... ```) wrapping the JSON output."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_newline = stripped.index("\n") if "\n" in stripped else len(stripped)
+        stripped = stripped[first_newline + 1 :]
+    if stripped.endswith("```"):
+        stripped = stripped[: -3]
+    return stripped.strip()
+
+
 def validate_summary(path: Path) -> list[str]:
     errors: list[str] = []
 
     try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        cleaned = strip_markdown_fences(raw)
+        obj = json.loads(cleaned)
+        if cleaned != raw:
+            path.write_text(cleaned, encoding="utf-8")
     except Exception as exc:  # pragma: no cover - runtime guard
         return [f"invalid JSON: {exc}"]
 
