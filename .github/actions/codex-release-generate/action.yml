@@ -10,6 +10,7 @@ runs:
         openai-api-key: ${{ inputs.openai_api_key }}
         prompt-file: ${{ inputs.prompt_file }}
         output-file: ${{ inputs.output_file }}
+        output-schema-file: ${{ inputs.schema_file }}
         working-directory: ${{ inputs.working_directory }}
         sandbox: read-only
         safety-strategy: drop-sudo
@@ -62,6 +63,10 @@ inputs:
   emitter_script:
     description: "Path to the output emission helper script"
     required: true
+  schema_file:
+    description: "Path to the JSON Schema file for structured output"
+    required: false
+    default: ""
 
 outputs:
   commit_title:

@@ -13,8 +13,8 @@
     "commit_title": {
       "type": "string",
       "minLength": 12,
-      "maxLength": 72,
-      "pattern": "^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,62}[A-Za-z0-9`)]$"
+      "maxLength": 98,
+      "pattern": "^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,90}[A-Za-z0-9`)]$"
     },
     "commit_body": {
       "type": "string",

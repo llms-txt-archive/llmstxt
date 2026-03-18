@@ -3,8 +3,9 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
 prompt_file="$repo_root/.github/codex/prompts/docs-diff-summary.md"
+schema_file="$repo_root/.github/codex/schemas/docs-diff-summary.schema.json"
 validator_script="$repo_root/.github/scripts/validate_codex_release.py"
 model="gpt-5.4"
 artifact_dir=""
@@ -146,6 +147,7 @@ run_codex() {
     --ephemeral \
     -C "$isolated_workdir" \
     -s read-only \
+    --output-schema "$schema_file" \
     -o "$output_file" \
     - < "$prompt_path"
 }
