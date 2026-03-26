@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-COMMIT_TITLE_RE = re.compile(r"^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&' .-]{4,90}[A-Za-z0-9`)]$")
+COMMIT_TITLE_RE = re.compile(r"^sync: [A-Za-z0-9`(][A-Za-z0-9`(),/&'+_.#@~ -]{4,90}[A-Za-z0-9`)]$")
 FORBIDDEN_SUFFIXES = {
     "+",
     "/",

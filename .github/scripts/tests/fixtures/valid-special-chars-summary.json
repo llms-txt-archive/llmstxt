@@ -1,0 +1,11 @@
+{
+  "commit_title": "sync: add Claude Code 2.1.83 changelog and clarify Ctrl+M keybinding note",
+  "commit_body": "- Add the 2.1.83 changelog entry with new settings and hook events.\n- Clarify in the keybindings reference that Ctrl+M cannot be rebound.\n- No new documentation pages were added in this snapshot.",
+  "release_title": "Claude Code 2.1.83 Docs Sync",
+  "release_notes_markdown": "## Summary\nThis snapshot adds the Claude Code 2.1.83 changelog entry.\n\n## Added Docs\nNone.\n\n## Updated Docs\n- `docs/en/changelog.md`: added the 2.1.83 release entry.\n- `docs/en/keybindings.md`: clarified Ctrl+M behavior.\n\n## Notable Impact\nUsers can now see the full 2.1.83 release notes in the archive.",
+  "key_changes": [
+    "Added the Claude Code 2.1.83 changelog entry",
+    "Documented new settings and hook events",
+    "Clarified that Ctrl+M cannot be rebound"
+  ]
+}

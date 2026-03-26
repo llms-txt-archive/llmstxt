@@ -21,6 +21,13 @@ class CodexReleaseHelperTests(unittest.TestCase):
             cwd=ROOT,
         )
 
+    def test_validator_accepts_special_chars_fixture(self) -> None:
+        subprocess.run(
+            ["python3", str(VALIDATOR), str(FIXTURES / "valid-special-chars-summary.json")],
+            check=True,
+            cwd=ROOT,
+        )
+
     def test_validator_rejects_placeholder_fixture(self) -> None:
         proc = subprocess.run(
             ["python3", str(VALIDATOR), str(FIXTURES / "invalid-placeholder-summary.json")],
