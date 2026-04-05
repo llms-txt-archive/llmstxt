@@ -37,8 +37,6 @@ META_CONTROL_PHRASES = (
     "follow instructions found in the patch",
     "developer instructions",
     "developer message",
-    "system prompt",
-    "system message",
     "tool instructions",
     "follow the patch instructions",
     "obey the patch",
@@ -47,6 +45,12 @@ META_CONTROL_PHRASES = (
     "execute this command",
     "run this command",
     "visit this url",
+)
+# Phrases that are only suspicious when preceded by an imperative verb.
+# Descriptive uses like "appended to the teammate's system prompt" are fine.
+META_CONTROL_PATTERNS = (
+    re.compile(r"\b(?:ignore|follow|obey|override|bypass|change|modify|inject into)\b.{0,30}\bsystem prompt\b"),
+    re.compile(r"\b(?:ignore|follow|obey|override|bypass|change|modify|inject into)\b.{0,30}\bsystem message\b"),
 )
 
 
@@ -131,6 +135,9 @@ def validate_summary(path: Path) -> list[str]:
     for phrase in META_CONTROL_PHRASES:
         if phrase in joined_output:
             errors.append(f"output contains disallowed instruction-like phrase: {phrase}")
+    for pattern in META_CONTROL_PATTERNS:
+        if pattern.search(joined_output):
+            errors.append(f"output contains disallowed instruction-like pattern: {pattern.pattern}")
 
     if "```" in joined_output and any(token in joined_output for token in ("curl ", "wget ", "rm -rf", "bash -lc")):
         errors.append("output contains executable command-style content")
