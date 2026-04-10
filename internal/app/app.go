@@ -440,10 +440,6 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	if len(failures) > 0 {
-		fmt.Fprintf(os.Stderr, "%s\n", (&PartialSyncError{Failures: failures}).Error())
-	}
-
 	fmt.Printf(
 		"Fetched %d markdown documents into %s (%d skipped non-markdown URLs, %d fetch failures)\n",
 		len(documents),
@@ -451,5 +447,10 @@ func Run(ctx context.Context, cfg Config) error {
 		len(skipped),
 		len(failures),
 	)
+
+	if len(failures) > 0 {
+		return &PartialSyncError{Failures: failures}
+	}
+
 	return nil
 }

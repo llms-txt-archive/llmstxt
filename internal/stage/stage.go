@@ -82,7 +82,10 @@ func Output(outputDir string, source fetch.Result, documents []fetch.Result, opt
 }
 
 func writeResult(root string, result fetch.Result) error {
-	targetPath := filepath.Join(root, filepath.FromSlash(result.RelativePath))
+	targetPath, err := fileutil.SafeJoin(root, result.RelativePath)
+	if err != nil {
+		return fmt.Errorf("validate path for %s: %w", result.RelativePath, err)
+	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return fmt.Errorf("create directory for %s: %w", targetPath, err)
 	}

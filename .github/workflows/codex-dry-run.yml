@@ -95,6 +95,7 @@ jobs:
           effort: ${{ env.CODEX_EFFORT }}
           validator_script: .github/scripts/validate_codex_release.py
           emitter_script: .github/scripts/emit_codex_release_outputs.py
+          schema_file: .github/codex/schemas/docs-diff-summary.schema.json
 
       - name: Split structured outputs
         run: |

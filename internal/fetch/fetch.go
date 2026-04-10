@@ -304,7 +304,8 @@ func Document(
 		}, nil
 	}
 
-	return Result{}, fmt.Errorf("failed to fetch %s", rawURL)
+	// All retry paths return within the loop; this satisfies the compiler.
+	return Result{}, fmt.Errorf("failed to fetch %s after %d attempts", rawURL, attempts)
 }
 
 func sleepWithJitter(ctx context.Context, attempt int) error {

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -38,6 +39,11 @@ func main() {
 
 	c := newCLI()
 	if err := c.run(ctx, cfg); err != nil {
+		var partial *app.PartialSyncError
+		if errors.As(err, &partial) {
+			fmt.Fprintln(os.Stderr, partial)
+			os.Exit(2)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

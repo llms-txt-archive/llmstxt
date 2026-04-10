@@ -20,7 +20,10 @@ import (
 
 	apppkg "github.com/f-pisani/llmstxt/internal/app"
 	fetchpkg "github.com/f-pisani/llmstxt/internal/fetch"
+	"github.com/f-pisani/llmstxt/internal/fileutil"
 	linkspkg "github.com/f-pisani/llmstxt/internal/links"
+	manifestpkg "github.com/f-pisani/llmstxt/internal/manifest"
+	policypkg "github.com/f-pisani/llmstxt/internal/policy"
 	stagepkg "github.com/f-pisani/llmstxt/internal/stage"
 )
 
@@ -48,12 +51,12 @@ func newTestClient(fn roundTripFunc) *http.Client {
 	return &http.Client{Transport: fn}
 }
 
-func mustPolicy(t *testing.T, sourceURL string, allowedHostsCSV string) *urlPolicy {
+func mustPolicy(t *testing.T, sourceURL string, allowedHostsCSV string) *policypkg.URLPolicy {
 	t.Helper()
 
-	policy, err := newURLPolicy(sourceURL, allowedHostsCSV)
+	policy, err := policypkg.NewURLPolicy(sourceURL, allowedHostsCSV)
 	if err != nil {
-		t.Fatalf("newURLPolicy() error = %v", err)
+		t.Fatalf("NewURLPolicy() error = %v", err)
 	}
 	return policy
 }
@@ -77,12 +80,6 @@ func mustParseURL(t *testing.T, rawURL string) *url.URL {
 		t.Fatalf("url.Parse(%q) error = %v", rawURL, err)
 	}
 	return parsedURL
-}
-
-func withoutRetrySleep(_ *testing.T) {
-	// No-op: retry sleep is now configured via Options.RetrySleep,
-	// not a package-level global. Tests that need custom sleep behavior
-	// should pass it via Options directly.
 }
 
 func withTestFlagSet(t *testing.T, args []string) {
@@ -140,15 +137,15 @@ func TestParseFlagsNormalizesConcurrencyFloor(t *testing.T) {
 		"-out", filepath.Join(t.TempDir(), "snapshot"),
 		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
 		"-concurrency", "0",
-		"-layout", layoutRoot,
+		"-layout", linkspkg.LayoutRoot,
 	})
 
 	cfg := parseFlags()
 	if cfg.Concurrency != 1 {
 		t.Fatalf("parseFlags() concurrency = %d, want 1", cfg.Concurrency)
 	}
-	if cfg.Layout != layoutRoot {
-		t.Fatalf("parseFlags() layout = %q, want %q", cfg.Layout, layoutRoot)
+	if cfg.Layout != linkspkg.LayoutRoot {
+		t.Fatalf("parseFlags() layout = %q, want %q", cfg.Layout, linkspkg.LayoutRoot)
 	}
 }
 
@@ -177,9 +174,9 @@ func TestExtractLinksDeduplicatesAndSortsMarkdownLinks(t *testing.T) {
 - [Overview again](https://code.claude.com/docs/en/overview.md)
 `)
 
-	got, err := extractLinks(input)
+	got, err := linkspkg.Extract(input)
 	if err != nil {
-		t.Fatalf("extractLinks() error = %v", err)
+		t.Fatalf("linkspkg.Extract() error = %v", err)
 	}
 
 	want := []string{
@@ -188,7 +185,7 @@ func TestExtractLinksDeduplicatesAndSortsMarkdownLinks(t *testing.T) {
 	}
 
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Fatalf("extractLinks() mismatch (-want +got):\n%s", diff)
+		t.Fatalf("linkspkg.Extract() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -200,9 +197,9 @@ https://example.com/docs/intro.md
 1. https://example.com/docs/advanced.md
 `)
 
-	got, err := extractLinks(input)
+	got, err := linkspkg.Extract(input)
 	if err != nil {
-		t.Fatalf("extractLinks() error = %v", err)
+		t.Fatalf("linkspkg.Extract() error = %v", err)
 	}
 
 	want := []string{
@@ -212,17 +209,17 @@ https://example.com/docs/intro.md
 	}
 
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Fatalf("extractLinks() mismatch (-want +got):\n%s", diff)
+		t.Fatalf("linkspkg.Extract() mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestExtractLinksErrorsWhenNoURLsExist(t *testing.T) {
-	_, err := extractLinks([]byte("# Empty index\n\nNo linked docs here.\n"))
+	_, err := linkspkg.Extract([]byte("# Empty index\n\nNo linked docs here.\n"))
 	if err == nil {
-		t.Fatal("extractLinks() error = nil, want error")
+		t.Fatal("linkspkg.Extract() error = nil, want error")
 	}
 	if !errors.Is(err, linkspkg.ErrNoDocumentURLs) {
-		t.Fatalf("extractLinks() error = %v, want ErrNoDocumentURLs", err)
+		t.Fatalf("linkspkg.Extract() error = %v, want ErrNoDocumentURLs", err)
 	}
 }
 
@@ -235,29 +232,29 @@ func TestPartitionDocumentURLsSkipsNonMarkdownLinks(t *testing.T) {
 		"https://platform.claude.com/llms-full.txt",
 	}
 
-	gotDocs, gotIndexes, gotSkipped, err := partitionDocumentURLs(input)
+	gotDocs, gotIndexes, gotSkipped, err := linkspkg.Partition(input)
 	if err != nil {
-		t.Fatalf("partitionDocumentURLs() error = %v", err)
+		t.Fatalf("linkspkg.Partition() error = %v", err)
 	}
 
 	wantDocs := []string{
 		"https://platform.claude.com/docs/en/agent-sdk/overview.md",
 		"https://platform.claude.com/docs/en/get-started.md",
 	}
-	wantSkipped := []skippedEntry{
-		{URL: "https://platform.claude.com", Reason: nonMarkdownReason},
-		{URL: "https://platform.claude.com/docs", Reason: nonMarkdownReason},
-		{URL: "https://platform.claude.com/llms-full.txt", Reason: nonMarkdownReason},
+	wantSkipped := []manifestpkg.SkippedEntry{
+		{URL: "https://platform.claude.com", Reason: linkspkg.NonMarkdownReason},
+		{URL: "https://platform.claude.com/docs", Reason: linkspkg.NonMarkdownReason},
+		{URL: "https://platform.claude.com/llms-full.txt", Reason: linkspkg.NonMarkdownReason},
 	}
 
 	if diff := cmp.Diff(wantDocs, gotDocs); diff != "" {
-		t.Fatalf("partitionDocumentURLs() docs mismatch (-want +got):\n%s", diff)
+		t.Fatalf("linkspkg.Partition() docs mismatch (-want +got):\n%s", diff)
 	}
 	if len(gotIndexes) != 0 {
-		t.Fatalf("partitionDocumentURLs() indexes = %v, want empty", gotIndexes)
+		t.Fatalf("linkspkg.Partition() indexes = %v, want empty", gotIndexes)
 	}
 	if diff := cmp.Diff(wantSkipped, gotSkipped); diff != "" {
-		t.Fatalf("partitionDocumentURLs() skipped mismatch (-want +got):\n%s", diff)
+		t.Fatalf("linkspkg.Partition() skipped mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -277,21 +274,21 @@ func TestIsMarkdownURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := isMarkdownURL(tt.url)
+			got, err := linkspkg.IsMarkdown(tt.url)
 			if tt.err != "" {
 				if err == nil {
-					t.Fatalf("isMarkdownURL() error = nil, want %q", tt.err)
+					t.Fatalf("linkspkg.IsMarkdown() error = nil, want %q", tt.err)
 				}
 				if !strings.Contains(err.Error(), tt.err) {
-					t.Fatalf("isMarkdownURL() error = %v, want %q", err, tt.err)
+					t.Fatalf("linkspkg.IsMarkdown() error = %v, want %q", err, tt.err)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("isMarkdownURL() error = %v", err)
+				t.Fatalf("linkspkg.IsMarkdown() error = %v", err)
 			}
 			if got != tt.want {
-				t.Fatalf("isMarkdownURL() = %v, want %v", got, tt.want)
+				t.Fatalf("linkspkg.IsMarkdown() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -348,7 +345,7 @@ func TestURLPolicyValidation(t *testing.T) {
 }
 
 func TestHTTPClientRedirectAllowsConfiguredHost(t *testing.T) {
-	client := newHTTPClient(5*time.Second, mustPolicy(t, "https://docs.example.com/llms.txt", "cdn.example.com"))
+	client := policypkg.NewHTTPClient(5*time.Second, mustPolicy(t, "https://docs.example.com/llms.txt", "cdn.example.com"))
 
 	err := client.CheckRedirect(
 		&http.Request{URL: mustParseURL(t, "https://cdn.example.com/docs/en/overview.md")},
@@ -360,7 +357,7 @@ func TestHTTPClientRedirectAllowsConfiguredHost(t *testing.T) {
 }
 
 func TestHTTPClientRedirectRejectsDisallowedHost(t *testing.T) {
-	client := newHTTPClient(5*time.Second, mustPolicy(t, "https://docs.example.com/llms.txt", ""))
+	client := policypkg.NewHTTPClient(5*time.Second, mustPolicy(t, "https://docs.example.com/llms.txt", ""))
 
 	err := client.CheckRedirect(
 		&http.Request{URL: mustParseURL(t, "https://evil.example.net/docs/en/overview.md")},
@@ -388,56 +385,56 @@ func TestValidateResolvedIPRejectsBlockedRanges(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateResolvedIP(net.ParseIP(tt.ip))
+			err := policypkg.ValidateResolvedIP(net.ParseIP(tt.ip))
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("validateResolvedIP(%s) error = %v, wantErr %v", tt.ip, err, tt.wantErr)
+				t.Fatalf("policypkg.ValidateResolvedIP(%s) error = %v, wantErr %v", tt.ip, err, tt.wantErr)
 			}
 		})
 	}
 }
 
 func TestRelativePathForURLRootLayout(t *testing.T) {
-	got, err := relativePathForURL("https://code.claude.com/docs/en/overview.md", layoutRoot)
+	got, err := linkspkg.RelativePath("https://code.claude.com/docs/en/overview.md", linkspkg.LayoutRoot)
 	if err != nil {
-		t.Fatalf("relativePathForURL() error = %v", err)
+		t.Fatalf("linkspkg.RelativePath() error = %v", err)
 	}
 
 	want := "docs/en/overview.md"
 	if got != want {
-		t.Fatalf("relativePathForURL() = %q, want %q", got, want)
+		t.Fatalf("linkspkg.RelativePath() = %q, want %q", got, want)
 	}
 }
 
 func TestRelativePathForURLNestedLayout(t *testing.T) {
-	got, err := relativePathForURL("https://code.claude.com/docs/en/overview.md", layoutNested)
+	got, err := linkspkg.RelativePath("https://code.claude.com/docs/en/overview.md", linkspkg.LayoutNested)
 	if err != nil {
-		t.Fatalf("relativePathForURL() error = %v", err)
+		t.Fatalf("linkspkg.RelativePath() error = %v", err)
 	}
 
 	want := filepath.Join("pages", "code.claude.com", "docs", "en", "overview.md")
 	if got != want {
-		t.Fatalf("relativePathForURL() = %q, want %q", got, want)
+		t.Fatalf("linkspkg.RelativePath() = %q, want %q", got, want)
 	}
 }
 
 func TestRelativePathForURLWithQueryInRootLayout(t *testing.T) {
-	got, err := relativePathForURL("https://example.com/docs/page.md?lang=en", layoutRoot)
+	got, err := linkspkg.RelativePath("https://example.com/docs/page.md?lang=en", linkspkg.LayoutRoot)
 	if err != nil {
-		t.Fatalf("relativePathForURL() error = %v", err)
+		t.Fatalf("linkspkg.RelativePath() error = %v", err)
 	}
 
 	want := filepath.Join("docs", "page__0933497c2075.md")
 	if got != want {
-		t.Fatalf("relativePathForURL() = %q, want %q", got, want)
+		t.Fatalf("linkspkg.RelativePath() = %q, want %q", got, want)
 	}
 }
 
 func TestSourcePathForLayout(t *testing.T) {
-	if got := sourcePathForLayout(layoutRoot); got != "llms.txt" {
-		t.Fatalf("sourcePathForLayout(root) = %q, want %q", got, "llms.txt")
+	if got := linkspkg.SourcePath(linkspkg.LayoutRoot); got != "llms.txt" {
+		t.Fatalf("linkspkg.SourcePath(root) = %q, want %q", got, "llms.txt")
 	}
-	if got := sourcePathForLayout(layoutNested); got != filepath.ToSlash(filepath.Join("source", "llms.txt")) {
-		t.Fatalf("sourcePathForLayout(nested) = %q", got)
+	if got := linkspkg.SourcePath(linkspkg.LayoutNested); got != filepath.ToSlash(filepath.Join("source", "llms.txt")) {
+		t.Fatalf("linkspkg.SourcePath(nested) = %q", got)
 	}
 }
 
@@ -445,7 +442,7 @@ func TestWriteManifestAndLoadManifestRoundTrip(t *testing.T) {
 	tempDir := t.TempDir()
 	manifestPath := filepath.Join(tempDir, "manifest.json")
 
-	want := manifest{
+	want := manifestpkg.Manifest{
 		Version:              1,
 		SourceURL:            "https://example.com/llms.txt",
 		SourcePath:           "llms.txt",
@@ -454,7 +451,7 @@ func TestWriteManifestAndLoadManifestRoundTrip(t *testing.T) {
 		SourceETag:           "\"etag-source\"",
 		DocumentCount:        1,
 		SkippedCount:         1,
-		Documents: []manifestEntry{
+		Documents: []manifestpkg.Entry{
 			{
 				URL:            "https://example.com/docs/overview.md",
 				Path:           "docs/overview.md",
@@ -464,57 +461,57 @@ func TestWriteManifestAndLoadManifestRoundTrip(t *testing.T) {
 				ETag:           "\"etag-doc\"",
 			},
 		},
-		Skipped: []skippedEntry{
-			{URL: "https://example.com/docs", Reason: nonMarkdownReason},
+		Skipped: []manifestpkg.SkippedEntry{
+			{URL: "https://example.com/docs", Reason: linkspkg.NonMarkdownReason},
 		},
-		Failures: []fetchFailure{
+		Failures: []manifestpkg.FetchFailure{
 			{URL: "https://example.com/docs/broken.md", Error: "bad response"},
 		},
 	}
 
-	if err := writeManifest(manifestPath, want); err != nil {
-		t.Fatalf("writeManifest() error = %v", err)
+	if err := manifestpkg.Write(manifestPath, &want); err != nil {
+		t.Fatalf("manifestpkg.Write() error = %v", err)
 	}
 
-	got, err := loadManifest(manifestPath)
+	got, err := manifestpkg.Load(manifestPath)
 	if err != nil {
-		t.Fatalf("loadManifest() error = %v", err)
+		t.Fatalf("manifestpkg.Load() error = %v", err)
 	}
 
 	if diff := cmp.Diff(want, *got); diff != "" {
-		t.Fatalf("loadManifest() mismatch (-want +got):\n%s", diff)
+		t.Fatalf("manifestpkg.Load() mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestNormalizeLastModified(t *testing.T) {
-	got := normalizeLastModified("Fri, 13 Mar 2026 06:36:52 GMT")
+	got := fetchpkg.NormalizeLastModified("Fri, 13 Mar 2026 06:36:52 GMT")
 	want := "2026-03-13T06:36:52Z"
 
 	if got != want {
-		t.Fatalf("normalizeLastModified() = %q, want %q", got, want)
+		t.Fatalf("fetchpkg.NormalizeLastModified() = %q, want %q", got, want)
 	}
 }
 
 func TestIfModifiedSinceHeader(t *testing.T) {
-	got := ifModifiedSinceHeader("2026-03-13T06:36:52Z")
+	got := fetchpkg.IfModifiedSinceHeader("2026-03-13T06:36:52Z")
 	want := "Fri, 13 Mar 2026 06:36:52 GMT"
 
 	if got != want {
-		t.Fatalf("ifModifiedSinceHeader() = %q, want %q", got, want)
+		t.Fatalf("fetchpkg.IfModifiedSinceHeader() = %q, want %q", got, want)
 	}
 }
 
 func TestNormalizeETag(t *testing.T) {
-	got := normalizeETag(` W/"abc123" `)
+	got := fetchpkg.NormalizeETag(` W/"abc123" `)
 	want := `W/"abc123"`
 
 	if got != want {
-		t.Fatalf("normalizeETag() = %q, want %q", got, want)
+		t.Fatalf("fetchpkg.NormalizeETag() = %q, want %q", got, want)
 	}
 }
 
 func TestEnsureMarkdownResponseRejectsExplicitHTML(t *testing.T) {
-	err := ensureMarkdownResponse(
+	err := fetchpkg.EnsureMarkdownResponse(
 		"200 OK",
 		"text/html; charset=utf-8",
 		map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
@@ -522,15 +519,15 @@ func TestEnsureMarkdownResponseRejectsExplicitHTML(t *testing.T) {
 		"/tmp/body.html",
 	)
 	if err == nil {
-		t.Fatal("ensureMarkdownResponse() error = nil, want rejection")
+		t.Fatal("fetchpkg.EnsureMarkdownResponse() error = nil, want rejection")
 	}
 	if !strings.Contains(err.Error(), "text/html") {
-		t.Fatalf("ensureMarkdownResponse() error = %q, want html rejection", err)
+		t.Fatalf("fetchpkg.EnsureMarkdownResponse() error = %q, want html rejection", err)
 	}
 }
 
 func TestEnsureMarkdownResponseRejectsLeadingCommentHTML(t *testing.T) {
-	err := ensureMarkdownResponse(
+	err := fetchpkg.EnsureMarkdownResponse(
 		"200 OK",
 		"",
 		nil,
@@ -538,15 +535,15 @@ func TestEnsureMarkdownResponseRejectsLeadingCommentHTML(t *testing.T) {
 		"/tmp/body.html",
 	)
 	if err == nil {
-		t.Fatal("ensureMarkdownResponse() error = nil, want rejection")
+		t.Fatal("fetchpkg.EnsureMarkdownResponse() error = nil, want rejection")
 	}
 	if !strings.Contains(err.Error(), "HTML document") {
-		t.Fatalf("ensureMarkdownResponse() error = %q, want HTML document rejection", err)
+		t.Fatalf("fetchpkg.EnsureMarkdownResponse() error = %q, want HTML document rejection", err)
 	}
 }
 
 func TestEnsureMarkdownResponseAcceptsCapturedSkillsMarkdown(t *testing.T) {
-	err := ensureMarkdownResponse(
+	err := fetchpkg.EnsureMarkdownResponse(
 		"200 OK",
 		"",
 		nil,
@@ -563,7 +560,7 @@ func TestEnsureMarkdownResponseAcceptsCapturedSkillsMarkdown(t *testing.T) {
 		"/tmp/body.md",
 	)
 	if err != nil {
-		t.Fatalf("ensureMarkdownResponse() error = %v", err)
+		t.Fatalf("fetchpkg.EnsureMarkdownResponse() error = %v", err)
 	}
 }
 
@@ -575,16 +572,16 @@ func TestWriteUnexpectedContentDiagnostic(t *testing.T) {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 
-	unexpected := &unexpectedContentError{
-		message:     "expected markdown response but received HTML document",
-		status:      "200 OK",
-		contentType: "text/html; charset=utf-8",
-		headers:     map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
-		sniff:       []byte(body),
-		bodyPath:    bodyPath,
+	unexpected := &fetchpkg.UnexpectedContentError{
+		Message:     "expected markdown response but received HTML document",
+		Status:      "200 OK",
+		ContentType: "text/html; charset=utf-8",
+		Headers:     map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
+		Sniff:       []byte(body),
+		BodyPath:    bodyPath,
 	}
 
-	diagnosticPath, err := writeUnexpectedContentDiagnostic(
+	diagnosticPath, err := fetchpkg.WriteUnexpectedContentDiagnostic(
 		diagnosticsDir,
 		"https://example.com/docs/skills.md",
 		"docs/skills.md",
@@ -612,14 +609,14 @@ func TestWriteUnexpectedContentDiagnostic(t *testing.T) {
 }
 
 func TestBuildDiagnosticManifestIncludesFailuresAndDocuments(t *testing.T) {
-	source := fetchResult{
+	source := fetchpkg.Result{
 		URL:            "https://docs.example.com/llms.txt",
 		RelativePath:   "llms.txt",
 		SHA256:         "source-sha",
 		LastModifiedAt: "2026-03-13T06:36:52Z",
 		ETag:           `"source-etag"`,
 	}
-	documents := []fetchResult{{
+	documents := []fetchpkg.Result{{
 		URL:            "https://docs.example.com/docs/en/overview.md",
 		RelativePath:   filepath.Join("docs", "en", "overview.md"),
 		SHA256:         "doc-sha",
@@ -627,24 +624,24 @@ func TestBuildDiagnosticManifestIncludesFailuresAndDocuments(t *testing.T) {
 		LastModifiedAt: "2026-03-13T06:37:00Z",
 		ETag:           `"doc-etag"`,
 	}}
-	skipped := []skippedEntry{{URL: "https://docs.example.com", Reason: nonMarkdownReason}}
-	failures := []fetchFailure{{URL: "https://docs.example.com/docs/en/missing.md", Error: "404"}}
+	skipped := []manifestpkg.SkippedEntry{{URL: "https://docs.example.com", Reason: linkspkg.NonMarkdownReason}}
+	failures := []manifestpkg.FetchFailure{{URL: "https://docs.example.com/docs/en/missing.md", Error: "404"}}
 
-	manifestData := buildDiagnosticManifest(source.URL, source.RelativePath, &source, documents, skipped, failures)
+	manifestData := apppkg.BuildDiagnosticManifest(source.URL, source.RelativePath, &source, documents, skipped, failures)
 	if manifestData.SourceSHA256 != "source-sha" {
-		t.Fatalf("buildDiagnosticManifest() source sha = %q", manifestData.SourceSHA256)
+		t.Fatalf("apppkg.BuildDiagnosticManifest() source sha = %q", manifestData.SourceSHA256)
 	}
 	if manifestData.DocumentCount != 1 {
-		t.Fatalf("buildDiagnosticManifest() document_count = %d, want 1", manifestData.DocumentCount)
+		t.Fatalf("apppkg.BuildDiagnosticManifest() document_count = %d, want 1", manifestData.DocumentCount)
 	}
 	if len(manifestData.Failures) != 1 {
-		t.Fatalf("buildDiagnosticManifest() failures len = %d, want 1", len(manifestData.Failures))
+		t.Fatalf("apppkg.BuildDiagnosticManifest() failures len = %d, want 1", len(manifestData.Failures))
 	}
 	if len(manifestData.Documents) != 1 || manifestData.Documents[0].Path != "docs/en/overview.md" {
-		t.Fatalf("buildDiagnosticManifest() documents = %#v", manifestData.Documents)
+		t.Fatalf("apppkg.BuildDiagnosticManifest() documents = %#v", manifestData.Documents)
 	}
-	if len(manifestData.Skipped) != 1 || manifestData.Skipped[0].Reason != nonMarkdownReason {
-		t.Fatalf("buildDiagnosticManifest() skipped = %#v", manifestData.Skipped)
+	if len(manifestData.Skipped) != 1 || manifestData.Skipped[0].Reason != linkspkg.NonMarkdownReason {
+		t.Fatalf("apppkg.BuildDiagnosticManifest() skipped = %#v", manifestData.Skipped)
 	}
 }
 
@@ -657,7 +654,7 @@ func TestFetchDocumentStreamsToDiskAndComputesMetadata(t *testing.T) {
 		}, "# Overview\n\nReal markdown content.\n"), nil
 	})
 
-	result, err := fetchDocument(
+	result, err := fetchpkg.Document(
 		context.Background(),
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
@@ -665,31 +662,31 @@ func TestFetchDocumentStreamsToDiskAndComputesMetadata(t *testing.T) {
 		t.TempDir(),
 		"https://docs.example.com/docs/en/overview.md",
 		filepath.Join("docs", "en", "overview.md"),
-		manifestEntry{},
+		manifestpkg.Entry{},
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("fetchDocument() error = %v", err)
+		t.Fatalf("fetchpkg.Document() error = %v", err)
 	}
 
 	if got := readFile(t, result.LocalPath); got != "# Overview\n\nReal markdown content.\n" {
-		t.Fatalf("fetchDocument() wrote %q", got)
+		t.Fatalf("fetchpkg.Document() wrote %q", got)
 	}
-	if result.SHA256 != hashBytes([]byte("# Overview\n\nReal markdown content.\n")) {
-		t.Fatalf("fetchDocument() sha256 = %q", result.SHA256)
+	if result.SHA256 != fetchpkg.HashBytes([]byte("# Overview\n\nReal markdown content.\n")) {
+		t.Fatalf("fetchpkg.Document() sha256 = %q", result.SHA256)
 	}
 	if result.Bytes != int64(len("# Overview\n\nReal markdown content.\n")) {
-		t.Fatalf("fetchDocument() bytes = %d", result.Bytes)
+		t.Fatalf("fetchpkg.Document() bytes = %d", result.Bytes)
 	}
 	if result.LastModifiedAt != "2026-03-13T06:36:52Z" {
-		t.Fatalf("fetchDocument() last_modified_at = %q", result.LastModifiedAt)
+		t.Fatalf("fetchpkg.Document() last_modified_at = %q", result.LastModifiedAt)
 	}
 	if result.ETag != `"etag-1"` {
-		t.Fatalf("fetchDocument() etag = %q", result.ETag)
+		t.Fatalf("fetchpkg.Document() etag = %q", result.ETag)
 	}
 }
 
 func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
-	withoutRetrySleep(t)
 
 	var attempts atomic.Int32
 	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
@@ -703,7 +700,7 @@ func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
 		}, "# Real markdown\n"), nil
 	})
 
-	result, err := fetchDocument(
+	result, err := fetchpkg.Document(
 		context.Background(),
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
@@ -711,17 +708,18 @@ func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
 		t.TempDir(),
 		"https://docs.example.com/docs/en/skills.md",
 		filepath.Join("docs", "en", "skills.md"),
-		manifestEntry{},
+		manifestpkg.Entry{},
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("fetchDocument() error = %v", err)
+		t.Fatalf("fetchpkg.Document() error = %v", err)
 	}
 
 	if got := readFile(t, result.LocalPath); got != "# Real markdown\n" {
-		t.Fatalf("fetchDocument() body = %q, want markdown body", got)
+		t.Fatalf("fetchpkg.Document() body = %q, want markdown body", got)
 	}
 	if got := attempts.Load(); got != 2 {
-		t.Fatalf("fetchDocument() attempts = %d, want 2", got)
+		t.Fatalf("fetchpkg.Document() attempts = %d, want 2", got)
 	}
 }
 
@@ -751,7 +749,7 @@ func TestFetchDocumentUsesCachedFileOn304(t *testing.T) {
 		}, ""), nil
 	})
 
-	result, err := fetchDocument(
+	result, err := fetchpkg.Document(
 		context.Background(),
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
@@ -759,26 +757,27 @@ func TestFetchDocumentUsesCachedFileOn304(t *testing.T) {
 		archiveRoot,
 		"https://docs.example.com/docs/en/overview.md",
 		relativePath,
-		manifestEntry{
+		manifestpkg.Entry{
 			Path:           filepath.ToSlash(relativePath),
-			SHA256:         hashBytes([]byte(body)),
+			SHA256:         fetchpkg.HashBytes([]byte(body)),
 			Bytes:          int64(len(body)),
 			LastModifiedAt: "2026-03-13T06:36:52Z",
 			ETag:           `"etag-1"`,
 		},
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("fetchDocument() error = %v", err)
+		t.Fatalf("fetchpkg.Document() error = %v", err)
 	}
 
 	if result.LocalPath != fullPath {
-		t.Fatalf("fetchDocument() local path = %q, want %q", result.LocalPath, fullPath)
+		t.Fatalf("fetchpkg.Document() local path = %q, want %q", result.LocalPath, fullPath)
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("requests = %d, want 1", got)
 	}
 	if result.ETag != `"etag-2"` {
-		t.Fatalf("fetchDocument() etag = %q, want response validator", result.ETag)
+		t.Fatalf("fetchpkg.Document() etag = %q, want response validator", result.ETag)
 	}
 }
 
@@ -803,7 +802,7 @@ func TestFetchDocumentRefetchesOn304CacheMiss(t *testing.T) {
 		}
 	})
 
-	result, err := fetchDocument(
+	result, err := fetchpkg.Document(
 		context.Background(),
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
@@ -811,21 +810,22 @@ func TestFetchDocumentRefetchesOn304CacheMiss(t *testing.T) {
 		t.TempDir(),
 		"https://docs.example.com/docs/en/overview.md",
 		filepath.Join("docs", "en", "overview.md"),
-		manifestEntry{
+		manifestpkg.Entry{
 			Path:           "docs/en/overview.md",
 			LastModifiedAt: "2026-03-13T06:36:52Z",
 			ETag:           `"etag-1"`,
 		},
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("fetchDocument() error = %v", err)
+		t.Fatalf("fetchpkg.Document() error = %v", err)
 	}
 
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests = %d, want 2", got)
 	}
 	if got := readFile(t, result.LocalPath); got != "# Refetched markdown\n" {
-		t.Fatalf("fetchDocument() refetched body = %q", got)
+		t.Fatalf("fetchpkg.Document() refetched body = %q", got)
 	}
 }
 
@@ -861,7 +861,7 @@ func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
 		}
 	})
 
-	result, err := fetchDocument(
+	result, err := fetchpkg.Document(
 		context.Background(),
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
@@ -869,32 +869,33 @@ func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
 		archiveRoot,
 		"https://docs.example.com/docs/en/overview.md",
 		relativePath,
-		manifestEntry{
+		manifestpkg.Entry{
 			Path:           filepath.ToSlash(relativePath),
-			SHA256:         hashBytes([]byte("# Expected markdown\n")),
+			SHA256:         fetchpkg.HashBytes([]byte("# Expected markdown\n")),
 			Bytes:          int64(len("# Expected markdown\n")),
 			LastModifiedAt: "2026-03-13T06:36:52Z",
 			ETag:           `"etag-1"`,
 		},
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("fetchDocument() error = %v", err)
+		t.Fatalf("fetchpkg.Document() error = %v", err)
 	}
 
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests = %d, want 2", got)
 	}
 	if got := readFile(t, result.LocalPath); got != "# Refetched markdown\n" {
-		t.Fatalf("fetchDocument() refetched body = %q", got)
+		t.Fatalf("fetchpkg.Document() refetched body = %q", got)
 	}
 	if result.ETag != `"etag-3"` {
-		t.Fatalf("fetchDocument() etag = %q, want refetched validator", result.ETag)
+		t.Fatalf("fetchpkg.Document() etag = %q, want refetched validator", result.ETag)
 	}
 }
 
 func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
 	archiveRoot := t.TempDir()
-	sourcePath := sourcePathForLayout(layoutRoot)
+	sourcePath := linkspkg.SourcePath(linkspkg.LayoutRoot)
 	fullPath := filepath.Join(archiveRoot, sourcePath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
@@ -916,7 +917,7 @@ func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
 		}
 	})
 
-	result, err := fetchDocument(
+	result, err := fetchpkg.Document(
 		context.Background(),
 		client,
 		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
@@ -924,23 +925,24 @@ func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
 		archiveRoot,
 		"https://docs.example.com/llms.txt",
 		sourcePath,
-		manifestEntry{
+		manifestpkg.Entry{
 			Path:           sourcePath,
-			SHA256:         hashBytes([]byte("expected llms body\n")),
+			SHA256:         fetchpkg.HashBytes([]byte("expected llms body\n")),
 			Bytes:          int64(len("expected llms body\n")),
 			LastModifiedAt: "2026-03-13T06:36:52Z",
 			ETag:           `"etag-1"`,
 		},
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("fetchDocument() error = %v", err)
+		t.Fatalf("fetchpkg.Document() error = %v", err)
 	}
 
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests = %d, want 2", got)
 	}
 	if got := readFile(t, result.LocalPath); got != "https://docs.example.com/docs/en/overview.md\n" {
-		t.Fatalf("fetchDocument() refetched body = %q", got)
+		t.Fatalf("fetchpkg.Document() refetched body = %q", got)
 	}
 }
 
@@ -955,55 +957,55 @@ func TestPreservePreviousDocumentUsesExistingArchiveCopy(t *testing.T) {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 
-	got, err := preservePreviousDocument(
+	got, err := fetchpkg.PreservePreviousDocument(
 		tempDir,
 		"https://example.com/docs/en/overview.md",
 		filepath.Join("docs", "en", "overview.md"),
-		manifestEntry{
+		manifestpkg.Entry{
 			URL:            "https://example.com/docs/en/overview.md",
 			Path:           "docs/en/overview.md",
-			SHA256:         hashBytes(body),
+			SHA256:         fetchpkg.HashBytes(body),
 			Bytes:          int64(len(body)),
 			LastModifiedAt: "2026-03-13T12:00:00Z",
 			ETag:           "\"etag-1\"",
 		},
 	)
 	if err != nil {
-		t.Fatalf("preservePreviousDocument() error = %v", err)
+		t.Fatalf("fetchpkg.PreservePreviousDocument() error = %v", err)
 	}
 
 	if got.RelativePath != filepath.Join("docs", "en", "overview.md") {
-		t.Fatalf("preservePreviousDocument() path = %q", got.RelativePath)
+		t.Fatalf("fetchpkg.PreservePreviousDocument() path = %q", got.RelativePath)
 	}
 	if got.LocalPath != targetPath {
-		t.Fatalf("preservePreviousDocument() local path = %q, want %q", got.LocalPath, targetPath)
+		t.Fatalf("fetchpkg.PreservePreviousDocument() local path = %q, want %q", got.LocalPath, targetPath)
 	}
 	if got.LastModifiedAt != "2026-03-13T12:00:00Z" {
-		t.Fatalf("preservePreviousDocument() last_modified_at = %q", got.LastModifiedAt)
+		t.Fatalf("fetchpkg.PreservePreviousDocument() last_modified_at = %q", got.LastModifiedAt)
 	}
 	if got.ETag != "\"etag-1\"" {
-		t.Fatalf("preservePreviousDocument() etag = %q", got.ETag)
+		t.Fatalf("fetchpkg.PreservePreviousDocument() etag = %q", got.ETag)
 	}
-	if got.SHA256 != hashBytes(body) {
-		t.Fatalf("preservePreviousDocument() sha256 = %q, want %q", got.SHA256, hashBytes(body))
+	if got.SHA256 != fetchpkg.HashBytes(body) {
+		t.Fatalf("fetchpkg.PreservePreviousDocument() sha256 = %q, want %q", got.SHA256, fetchpkg.HashBytes(body))
 	}
 	if got.Bytes != int64(len(body)) {
-		t.Fatalf("preservePreviousDocument() bytes = %d, want %d", got.Bytes, len(body))
+		t.Fatalf("fetchpkg.PreservePreviousDocument() bytes = %d, want %d", got.Bytes, len(body))
 	}
 }
 
 func TestPreservePreviousDocumentRequiresPreviousArchiveEntry(t *testing.T) {
-	_, err := preservePreviousDocument(
+	_, err := fetchpkg.PreservePreviousDocument(
 		t.TempDir(),
 		"https://example.com/docs/en/overview.md",
 		filepath.Join("docs", "en", "overview.md"),
-		manifestEntry{},
+		manifestpkg.Entry{},
 	)
 	if err == nil {
-		t.Fatal("preservePreviousDocument() error = nil, want error")
+		t.Fatal("fetchpkg.PreservePreviousDocument() error = nil, want error")
 	}
 	if !errors.Is(err, fetchpkg.ErrNoPreviousEntry) {
-		t.Fatalf("preservePreviousDocument() error = %v, want ErrNoPreviousEntry", err)
+		t.Fatalf("fetchpkg.PreservePreviousDocument() error = %v, want ErrNoPreviousEntry", err)
 	}
 }
 
@@ -1017,34 +1019,33 @@ func TestPreservePreviousDocumentRejectsHashMismatch(t *testing.T) {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 
-	_, err := preservePreviousDocument(
+	_, err := fetchpkg.PreservePreviousDocument(
 		tempDir,
 		"https://example.com/docs/en/overview.md",
 		filepath.Join("docs", "en", "overview.md"),
-		manifestEntry{
+		manifestpkg.Entry{
 			URL:    "https://example.com/docs/en/overview.md",
 			Path:   "docs/en/overview.md",
-			SHA256: hashBytes([]byte("# Expected markdown\n")),
+			SHA256: fetchpkg.HashBytes([]byte("# Expected markdown\n")),
 			Bytes:  int64(len("# Expected markdown\n")),
 		},
 	)
 	if err == nil {
-		t.Fatal("preservePreviousDocument() error = nil, want hash mismatch")
+		t.Fatal("fetchpkg.PreservePreviousDocument() error = nil, want hash mismatch")
 	}
 	if !strings.Contains(err.Error(), "does not match previous manifest hash") {
-		t.Fatalf("preservePreviousDocument() error = %v, want hash mismatch", err)
+		t.Fatalf("fetchpkg.PreservePreviousDocument() error = %v, want hash mismatch", err)
 	}
 }
 
 func TestSafeJoinRejectsEscapingPath(t *testing.T) {
-	_, err := safeJoin(t.TempDir(), filepath.Join("..", "secret.txt"))
+	_, err := fileutil.SafeJoin(t.TempDir(), filepath.Join("..", "secret.txt"))
 	if err == nil {
-		t.Fatal("safeJoin() error = nil, want rejection")
+		t.Fatal("fileutil.SafeJoin() error = nil, want rejection")
 	}
 }
 
 func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
-	withoutRetrySleep(t)
 
 	archiveRoot := t.TempDir()
 	cachedBody := []byte("# Previous snapshot\n")
@@ -1062,28 +1063,30 @@ func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 		}, "<!DOCTYPE html><html><body>not found</body></html>"), nil
 	})
 
-	previous := map[string]manifestEntry{
+	previous := map[string]manifestpkg.Entry{
 		"https://docs.example.com/docs/en/skills.md": {
 			URL:            "https://docs.example.com/docs/en/skills.md",
 			Path:           "docs/en/skills.md",
-			SHA256:         hashBytes(cachedBody),
+			SHA256:         fetchpkg.HashBytes(cachedBody),
 			Bytes:          int64(len(cachedBody)),
 			LastModifiedAt: "2026-03-13T12:00:00Z",
 			ETag:           "\"etag-1\"",
 		},
 	}
 
-	gotDocs, gotFailures := fetchDocuments(
+	gotDocs, gotFailures := fetchpkg.Documents(
 		context.Background(),
-		client,
-		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-		layoutRoot,
-		filepath.Join(t.TempDir(), "diagnostics"),
-		t.TempDir(),
-		archiveRoot,
 		[]string{"https://docs.example.com/docs/en/skills.md"},
-		1,
-		previous,
+		fetchpkg.Options{
+			Client:            client,
+			URLPolicy:         mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+			Layout:            linkspkg.LayoutRoot,
+			DiagnosticsDir:    filepath.Join(t.TempDir(), "diagnostics"),
+			SpoolDir:          t.TempDir(),
+			ArchiveRoot:       archiveRoot,
+			Concurrency:       1,
+			PreviousDocuments: previous,
+		},
 	)
 
 	if len(gotDocs) != 1 {
@@ -1104,7 +1107,6 @@ func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 }
 
 func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
-	withoutRetrySleep(t)
 
 	archiveRoot := t.TempDir()
 	cachedBody := []byte("# Previous snapshot\n")
@@ -1127,28 +1129,30 @@ func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 		}, "# Fresh snapshot\n"), nil
 	})
 
-	previous := map[string]manifestEntry{
+	previous := map[string]manifestpkg.Entry{
 		"https://docs.example.com/docs/en/skills.md": {
 			URL:            "https://docs.example.com/docs/en/skills.md",
 			Path:           "docs/en/skills.md",
-			SHA256:         hashBytes(cachedBody),
+			SHA256:         fetchpkg.HashBytes(cachedBody),
 			Bytes:          int64(len(cachedBody)),
 			LastModifiedAt: "2026-03-13T12:00:00Z",
 			ETag:           "\"etag-1\"",
 		},
 	}
 
-	firstDocs, firstFailures := fetchDocuments(
+	firstDocs, firstFailures := fetchpkg.Documents(
 		context.Background(),
-		failingClient,
-		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-		layoutRoot,
-		filepath.Join(t.TempDir(), "diagnostics-one"),
-		t.TempDir(),
-		archiveRoot,
 		[]string{"https://docs.example.com/docs/en/skills.md"},
-		1,
-		previous,
+		fetchpkg.Options{
+			Client:            failingClient,
+			URLPolicy:         mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+			Layout:            linkspkg.LayoutRoot,
+			DiagnosticsDir:    filepath.Join(t.TempDir(), "diagnostics-one"),
+			SpoolDir:          t.TempDir(),
+			ArchiveRoot:       archiveRoot,
+			Concurrency:       1,
+			PreviousDocuments: previous,
+		},
 	)
 	if len(firstDocs) != 1 || firstDocs[0].LocalPath != targetPath {
 		t.Fatalf("first fetchDocuments() docs = %#v", firstDocs)
@@ -1157,17 +1161,19 @@ func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 		t.Fatalf("first fetchDocuments() failures = %#v", firstFailures)
 	}
 
-	secondDocs, secondFailures := fetchDocuments(
+	secondDocs, secondFailures := fetchpkg.Documents(
 		context.Background(),
-		successClient,
-		mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-		layoutRoot,
-		filepath.Join(t.TempDir(), "diagnostics-two"),
-		t.TempDir(),
-		archiveRoot,
 		[]string{"https://docs.example.com/docs/en/skills.md"},
-		1,
-		previous,
+		fetchpkg.Options{
+			Client:            successClient,
+			URLPolicy:         mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+			Layout:            linkspkg.LayoutRoot,
+			DiagnosticsDir:    filepath.Join(t.TempDir(), "diagnostics-two"),
+			SpoolDir:          t.TempDir(),
+			ArchiveRoot:       archiveRoot,
+			Concurrency:       1,
+			PreviousDocuments: previous,
+		},
 	)
 	if len(secondFailures) != 0 {
 		t.Fatalf("second fetchDocuments() failures = %#v, want none", secondFailures)
@@ -1202,12 +1208,12 @@ func TestReplaceDirRecoversFromLeftoverBackup(t *testing.T) {
 		t.Fatalf("os.WriteFile(temp) error = %v", err)
 	}
 
-	if err := replaceDir(tempDir, outputDir); err != nil {
-		t.Fatalf("replaceDir() error = %v", err)
+	if err := stagepkg.ReplaceDir(tempDir, outputDir, nil); err != nil {
+		t.Fatalf("ReplaceDir() error = %v", err)
 	}
 
 	if got := readFile(t, filepath.Join(outputDir, "new.md")); got != "new\n" {
-		t.Fatalf("replaceDir() output = %q, want new content", got)
+		t.Fatalf("ReplaceDir() output = %q, want new content", got)
 	}
 	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
 		t.Fatalf("backup directory still exists: %v", err)
@@ -1229,29 +1235,29 @@ func TestReconcileStageStateRestoresBackupFromJournal(t *testing.T) {
 	if err := os.MkdirAll(tempDir, 0o750); err != nil {
 		t.Fatalf("os.MkdirAll(temp) error = %v", err)
 	}
-	if err := writeStageCompletionMarker(tempDir); err != nil {
-		t.Fatalf("writeStageCompletionMarker() error = %v", err)
+	if err := stagepkg.WriteCompletionMarker(tempDir); err != nil {
+		t.Fatalf("stagepkg.WriteCompletionMarker() error = %v", err)
 	}
-	if err := writeStageJournal(outputDir, stageJournal{
+	if err := stagepkg.WriteJournal(outputDir, stagepkg.Journal{
 		TempDir:   tempDir,
 		OutputDir: outputDir,
 		BackupDir: backupDir,
 		Phase:     "backup_created",
 	}); err != nil {
-		t.Fatalf("writeStageJournal() error = %v", err)
+		t.Fatalf("stagepkg.WriteJournal() error = %v", err)
 	}
 
-	if err := reconcileStageState(outputDir); err != nil {
-		t.Fatalf("reconcileStageState() error = %v", err)
+	if err := stagepkg.ReconcileState(outputDir, nil); err != nil {
+		t.Fatalf("stagepkg.ReconcileState() error = %v", err)
 	}
 
 	if got := readFile(t, filepath.Join(outputDir, "old.md")); got != "old\n" {
-		t.Fatalf("reconcileStageState() output = %q, want restored backup", got)
+		t.Fatalf("stagepkg.ReconcileState() output = %q, want restored backup", got)
 	}
 	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
 		t.Fatalf("staged temp directory still exists: %v", err)
 	}
-	if _, err := os.Stat(stageJournalPath(outputDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(stagepkg.JournalPath(outputDir)); !os.IsNotExist(err) {
 		t.Fatalf("stage journal still exists: %v", err)
 	}
 }
@@ -1267,29 +1273,29 @@ func TestReconcileStageStatePromotesCompletedTempFromJournal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tempDir, "new.md"), []byte("new\n"), 0o600); err != nil {
 		t.Fatalf("os.WriteFile(temp) error = %v", err)
 	}
-	if err := writeStageCompletionMarker(tempDir); err != nil {
-		t.Fatalf("writeStageCompletionMarker() error = %v", err)
+	if err := stagepkg.WriteCompletionMarker(tempDir); err != nil {
+		t.Fatalf("stagepkg.WriteCompletionMarker() error = %v", err)
 	}
-	if err := writeStageJournal(outputDir, stageJournal{
+	if err := stagepkg.WriteJournal(outputDir, stagepkg.Journal{
 		TempDir:   tempDir,
 		OutputDir: outputDir,
 		BackupDir: outputDir + ".bak",
 		Phase:     "staged",
 	}); err != nil {
-		t.Fatalf("writeStageJournal() error = %v", err)
+		t.Fatalf("stagepkg.WriteJournal() error = %v", err)
 	}
 
-	if err := reconcileStageState(outputDir); err != nil {
-		t.Fatalf("reconcileStageState() error = %v", err)
+	if err := stagepkg.ReconcileState(outputDir, nil); err != nil {
+		t.Fatalf("stagepkg.ReconcileState() error = %v", err)
 	}
 
 	if got := readFile(t, filepath.Join(outputDir, "new.md")); got != "new\n" {
-		t.Fatalf("reconcileStageState() output = %q, want promoted staged content", got)
+		t.Fatalf("stagepkg.ReconcileState() output = %q, want promoted staged content", got)
 	}
-	if _, err := os.Stat(stageCompletionMarkerPath(outputDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(stagepkg.CompletionMarkerPath(outputDir)); !os.IsNotExist(err) {
 		t.Fatalf("completion marker still exists in output: %v", err)
 	}
-	if _, err := os.Stat(stageJournalPath(outputDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(stagepkg.JournalPath(outputDir)); !os.IsNotExist(err) {
 		t.Fatalf("stage journal still exists: %v", err)
 	}
 }
@@ -1312,21 +1318,21 @@ func TestReconcileStageStateRemovesStaleArtifactsWhenOutputExists(t *testing.T) 
 	if err := os.MkdirAll(tempDir, 0o750); err != nil {
 		t.Fatalf("os.MkdirAll(temp) error = %v", err)
 	}
-	if err := writeStageJournal(outputDir, stageJournal{
+	if err := stagepkg.WriteJournal(outputDir, stagepkg.Journal{
 		TempDir:   tempDir,
 		OutputDir: outputDir,
 		BackupDir: backupDir,
 		Phase:     "activate_output",
 	}); err != nil {
-		t.Fatalf("writeStageJournal() error = %v", err)
+		t.Fatalf("stagepkg.WriteJournal() error = %v", err)
 	}
 
-	if err := reconcileStageState(outputDir); err != nil {
-		t.Fatalf("reconcileStageState() error = %v", err)
+	if err := stagepkg.ReconcileState(outputDir, nil); err != nil {
+		t.Fatalf("stagepkg.ReconcileState() error = %v", err)
 	}
 
 	if got := readFile(t, filepath.Join(outputDir, "live.md")); got != "live\n" {
-		t.Fatalf("reconcileStageState() output = %q, want live output preserved", got)
+		t.Fatalf("stagepkg.ReconcileState() output = %q, want live output preserved", got)
 	}
 	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
 		t.Fatalf("backup directory still exists: %v", err)
@@ -1344,17 +1350,17 @@ func TestReconcileStageStateRemovesIncompleteTempFromJournal(t *testing.T) {
 	if err := os.MkdirAll(tempDir, 0o750); err != nil {
 		t.Fatalf("os.MkdirAll(temp) error = %v", err)
 	}
-	if err := writeStageJournal(outputDir, stageJournal{
+	if err := stagepkg.WriteJournal(outputDir, stagepkg.Journal{
 		TempDir:   tempDir,
 		OutputDir: outputDir,
 		BackupDir: outputDir + ".bak",
 		Phase:     "staged",
 	}); err != nil {
-		t.Fatalf("writeStageJournal() error = %v", err)
+		t.Fatalf("stagepkg.WriteJournal() error = %v", err)
 	}
 
-	if err := reconcileStageState(outputDir); err != nil {
-		t.Fatalf("reconcileStageState() error = %v", err)
+	if err := stagepkg.ReconcileState(outputDir, nil); err != nil {
+		t.Fatalf("stagepkg.ReconcileState() error = %v", err)
 	}
 
 	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
@@ -1380,11 +1386,11 @@ func TestReplaceDirWarnsWhenBackupCleanupFails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tempDir, "new.md"), []byte("new\n"), 0o600); err != nil {
 		t.Fatalf("os.WriteFile(temp) error = %v", err)
 	}
-	if err := writeStageCompletionMarker(tempDir); err != nil {
-		t.Fatalf("writeStageCompletionMarker() error = %v", err)
+	if err := stagepkg.WriteCompletionMarker(tempDir); err != nil {
+		t.Fatalf("stagepkg.WriteCompletionMarker() error = %v", err)
 	}
 
-	testStageOpts = &stagepkg.Options{
+	opts := &stagepkg.Options{
 		RemoveAll: func(path string) error {
 			if path == backupDir {
 				return fmt.Errorf("simulated cleanup failure")
@@ -1392,16 +1398,13 @@ func TestReplaceDirWarnsWhenBackupCleanupFails(t *testing.T) {
 			return os.RemoveAll(path)
 		},
 	}
-	t.Cleanup(func() {
-		testStageOpts = nil
-	})
 
-	if err := replaceDir(tempDir, outputDir); err != nil {
-		t.Fatalf("replaceDir() error = %v", err)
+	if err := stagepkg.ReplaceDir(tempDir, outputDir, opts); err != nil {
+		t.Fatalf("ReplaceDir() error = %v", err)
 	}
 
 	if got := readFile(t, filepath.Join(outputDir, "new.md")); got != "new\n" {
-		t.Fatalf("replaceDir() output = %q, want new content", got)
+		t.Fatalf("ReplaceDir() output = %q, want new content", got)
 	}
 	if _, err := os.Stat(backupDir); err != nil {
 		t.Fatalf("backup directory missing after simulated cleanup failure: %v", err)
@@ -1422,8 +1425,8 @@ func TestIsIndex(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := isIndex(tt.url); got != tt.want {
-			t.Errorf("isIndex(%q) = %v, want %v", tt.url, got, tt.want)
+		if got := linkspkg.IsIndex(tt.url); got != tt.want {
+			t.Errorf("linkspkg.IsIndex(%q) = %v, want %v", tt.url, got, tt.want)
 		}
 	}
 }
@@ -1436,9 +1439,9 @@ func TestPartitionSeparatesIndexURLs(t *testing.T) {
 		"https://example.com/page",
 	}
 
-	docs, indexes, skipped, err := partitionDocumentURLs(input)
+	docs, indexes, skipped, err := linkspkg.Partition(input)
 	if err != nil {
-		t.Fatalf("partitionDocumentURLs() error = %v", err)
+		t.Fatalf("linkspkg.Partition() error = %v", err)
 	}
 
 	if diff := cmp.Diff([]string{"https://example.com/docs/overview.md"}, docs); diff != "" {
@@ -1447,9 +1450,9 @@ func TestPartitionSeparatesIndexURLs(t *testing.T) {
 	if diff := cmp.Diff([]string{"https://example.com/api/llms.txt"}, indexes); diff != "" {
 		t.Fatalf("indexes mismatch (-want +got):\n%s", diff)
 	}
-	wantSkipped := []skippedEntry{
-		{URL: "https://example.com/llms-full.txt", Reason: nonMarkdownReason},
-		{URL: "https://example.com/page", Reason: nonMarkdownReason},
+	wantSkipped := []manifestpkg.SkippedEntry{
+		{URL: "https://example.com/llms-full.txt", Reason: linkspkg.NonMarkdownReason},
+		{URL: "https://example.com/page", Reason: linkspkg.NonMarkdownReason},
 	}
 	if diff := cmp.Diff(wantSkipped, skipped); diff != "" {
 		t.Fatalf("skipped mismatch (-want +got):\n%s", diff)
@@ -1475,14 +1478,14 @@ func TestRecursiveDiscovery(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, err := extractLinks([]byte(rootBody))
+	extractedLinks, err := linkspkg.Extract([]byte(rootBody))
 	if err != nil {
-		t.Fatalf("extractLinks() error = %v", err)
+		t.Fatalf("linkspkg.Extract() error = %v", err)
 	}
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1523,11 +1526,11 @@ func TestRecursiveDiscoveryCyclePrevention(t *testing.T) {
 
 	// Start from root which links to /a/llms.txt.
 	rootBody := "- [A](https://example.com/a/llms.txt)\n"
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1554,11 +1557,11 @@ func TestRecursiveDiscoveryCrossHostBlocked(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1596,11 +1599,11 @@ func TestRecursiveDiscoveryEmptyNestedIndex(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1614,10 +1617,10 @@ func TestRecursiveDiscoveryEmptyNestedIndex(t *testing.T) {
 }
 
 func TestLlmsFullTxtNotTreatedAsIndex(t *testing.T) {
-	if isIndex("https://example.com/llms-full.txt") {
+	if linkspkg.IsIndex("https://example.com/llms-full.txt") {
 		t.Fatal("llms-full.txt should not be treated as an index")
 	}
-	if isIndex("https://example.com/docs/llms-full.txt") {
+	if linkspkg.IsIndex("https://example.com/docs/llms-full.txt") {
 		t.Fatal("nested llms-full.txt should not be treated as an index")
 	}
 }
@@ -1636,11 +1639,11 @@ func TestRecursiveDiscoveryNestedFetchFailure(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1679,11 +1682,11 @@ func TestRecursiveDiscoveryDocDedup(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1713,11 +1716,11 @@ func TestRecursiveDiscoveryContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately before discovery.
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		ctx, "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1749,11 +1752,11 @@ func TestRecursiveDiscoveryIndexCap(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1801,14 +1804,14 @@ func TestRecursiveDiscoveryWithFixtures(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, err := extractLinks(rootBody)
+	extractedLinks, err := linkspkg.Extract(rootBody)
 	if err != nil {
-		t.Fatalf("extractLinks() error = %v", err)
+		t.Fatalf("linkspkg.Extract() error = %v", err)
 	}
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1864,11 +1867,11 @@ func TestRecursiveDiscoveryFragmentDedup(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
@@ -1903,11 +1906,11 @@ func TestRecursiveDiscoveryEmptyNestedIndexSkipReason(t *testing.T) {
 	spoolDir := t.TempDir()
 	archiveRoot := t.TempDir()
 
-	extractedLinks, _ := extractLinks([]byte(rootBody))
+	extractedLinks, _ := linkspkg.Extract([]byte(rootBody))
 
 	result, err := apppkg.DiscoverDocuments(
 		context.Background(), "https://example.com/llms.txt", extractedLinks, apppkg.DiscoveryConfig{
-			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: layoutNested,
+			Client: client, URLPolicy: pol, SpoolDir: spoolDir, ArchiveRoot: archiveRoot, Layout: linkspkg.LayoutNested,
 		},
 	)
 	if err != nil {
