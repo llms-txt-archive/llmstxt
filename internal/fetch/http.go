@@ -36,6 +36,7 @@ type HTTPResponse struct {
 }
 
 // TransientHTTPError wraps HTTP errors that may succeed on retry (5xx, 429).
+// Callers can detect this with errors.As to implement custom retry logic.
 type TransientHTTPError struct {
 	StatusCode int
 	Status     string
@@ -61,8 +62,8 @@ func parseRetryAfter(value string) time.Duration {
 	return 0
 }
 
-// URL performs an HTTP GET, writes the response body to a spool file, and returns the response metadata.
-func URL(ctx context.Context, client *http.Client, rawURL string, spoolDir string, validators Validators) (response HTTPResponse, err error) {
+// Get performs an HTTP GET, writes the response body to a spool file, and returns the response metadata.
+func Get(ctx context.Context, client *http.Client, rawURL string, spoolDir string, validators Validators) (response HTTPResponse, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return HTTPResponse{}, err
@@ -202,4 +203,12 @@ func CoalesceValidator(current string, previous string) string {
 		return current
 	}
 	return previous
+}
+
+// CleanupSpoolFile removes a temporary spool file, ignoring errors.
+func CleanupSpoolFile(path string) {
+	if path == "" {
+		return
+	}
+	_ = os.Remove(path)
 }

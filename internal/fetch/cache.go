@@ -1,11 +1,42 @@
 package fetch
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/f-pisani/llmstxt/internal/manifest"
 )
+
+// SummarizeExistingFile computes the SHA-256 hash and byte count of a file under root.
+func SummarizeExistingFile(root string, relativePath string) (localPath string, sha256Value string, bytesCount int64, err error) {
+	localPath, err = SafeJoin(root, relativePath)
+	if err != nil {
+		return "", "", 0, err
+	}
+
+	// #nosec G304 -- localPath is anchored to archiveRoot via SafeJoin.
+	file, err := os.Open(localPath)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("read cached file %s: %w", relativePath, err)
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close cached file %s: %w", relativePath, closeErr)
+		}
+	}()
+
+	hasher := sha256.New()
+	written, err := io.Copy(hasher, file)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("hash cached file %s: %w", relativePath, err)
+	}
+
+	return localPath, hex.EncodeToString(hasher.Sum(nil)), written, nil
+}
 
 // PreservePreviousDocument returns a Result backed by an existing snapshot file when a fresh fetch fails.
 func PreservePreviousDocument(archiveRoot string, rawURL string, relativePath string, previous manifest.Entry) (Result, error) {

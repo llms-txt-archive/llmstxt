@@ -16,6 +16,11 @@ import (
 const (
 	journalName  = ".llmstxt-stage.json"
 	completeName = ".llmstxt-complete"
+
+	phaseStaged         = "staged"
+	phaseBackupExisting = "backup_existing_output"
+	phaseBackupCreated  = "backup_created"
+	phaseActivate       = "activate_output"
 )
 
 // Options configures staging behavior. A nil *Options is valid and uses defaults.
@@ -105,14 +110,20 @@ func ReplaceDir(tempDir string, outputDir string, opts *Options) error {
 		TempDir:   tempDir,
 		OutputDir: outputDir,
 		BackupDir: backupDir,
-		Phase:     "staged",
+		Phase:     phaseStaged,
 	}
 	if err := WriteJournal(outputDir, journal); err != nil {
 		return err
 	}
 
-	outputExists := pathExists(outputDir)
-	backupExists := pathExists(backupDir)
+	outputExists, err := pathExists(outputDir)
+	if err != nil {
+		return err
+	}
+	backupExists, err := pathExists(backupDir)
+	if err != nil {
+		return err
+	}
 
 	if backupExists && !outputExists {
 		if err := os.Rename(backupDir, outputDir); err != nil {
@@ -129,7 +140,7 @@ func ReplaceDir(tempDir string, outputDir string, opts *Options) error {
 	}
 
 	if outputExists {
-		journal.Phase = "backup_existing_output"
+		journal.Phase = phaseBackupExisting
 		if err := WriteJournal(outputDir, journal); err != nil {
 			return err
 		}
@@ -137,13 +148,13 @@ func ReplaceDir(tempDir string, outputDir string, opts *Options) error {
 			return fmt.Errorf("backup existing output: %w", err)
 		}
 		backupExists = true
-		journal.Phase = "backup_created"
+		journal.Phase = phaseBackupCreated
 		if err := WriteJournal(outputDir, journal); err != nil {
 			return err
 		}
 	}
 
-	journal.Phase = "activate_output"
+	journal.Phase = phaseActivate
 	if err := WriteJournal(outputDir, journal); err != nil {
 		return err
 	}
@@ -175,8 +186,14 @@ func ReplaceDir(tempDir string, outputDir string, opts *Options) error {
 func ReconcileState(outputDir string, opts *Options) error {
 	removeAll := opts.removeAll()
 	backupDir := outputDir + ".bak"
-	outputExists := pathExists(outputDir)
-	backupExists := pathExists(backupDir)
+	outputExists, err := pathExists(outputDir)
+	if err != nil {
+		return err
+	}
+	backupExists, err := pathExists(backupDir)
+	if err != nil {
+		return err
+	}
 
 	journal, err := LoadJournal(outputDir)
 	if err != nil {
@@ -197,10 +214,22 @@ func ReconcileState(outputDir string, opts *Options) error {
 		return nil
 	}
 
-	outputExists = pathExists(journal.OutputDir)
-	backupExists = pathExists(journal.BackupDir)
-	tempExists := pathExists(journal.TempDir)
-	markerExists := pathExists(CompletionMarkerPath(journal.TempDir))
+	outputExists, err = pathExists(journal.OutputDir)
+	if err != nil {
+		return err
+	}
+	backupExists, err = pathExists(journal.BackupDir)
+	if err != nil {
+		return err
+	}
+	tempExists, err := pathExists(journal.TempDir)
+	if err != nil {
+		return err
+	}
+	markerExists, err := pathExists(CompletionMarkerPath(journal.TempDir))
+	if err != nil {
+		return err
+	}
 
 	switch {
 	case outputExists:
@@ -309,7 +338,13 @@ func RemoveJournal(outputDir string) error {
 	return nil
 }
 
-func pathExists(path string) bool {
+func pathExists(path string) (bool, error) {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat %s: %w", path, err)
 }

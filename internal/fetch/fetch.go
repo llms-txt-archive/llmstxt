@@ -55,14 +55,14 @@ type Validators struct {
 
 // Options configures a batch document fetch.
 type Options struct {
-	Client            *http.Client
-	URLPolicy         *policy.URLPolicy
-	Layout            string
-	DiagnosticsDir    string
-	SpoolDir          string
-	ArchiveRoot       string
-	Concurrency       int
-	PreviousDocuments map[string]manifest.Entry
+	Client         *http.Client
+	URLPolicy      *policy.URLPolicy
+	Layout         string
+	DiagnosticsDir string
+	SpoolDir       string
+	ArchiveRoot    string
+	Concurrency    int
+	PreviousDocs   map[string]manifest.Entry
 	// RateLimiter controls the rate of outbound HTTP requests. Nil means no limit.
 	RateLimiter *rate.Limiter
 	// RetrySleep overrides the retry sleep function. Defaults to sleepWithJitter if nil.
@@ -70,18 +70,70 @@ type Options struct {
 	Logger     *slog.Logger
 }
 
-func (o *Options) retrySleep() func(context.Context, int) error {
-	if o.RetrySleep != nil {
-		return o.RetrySleep
-	}
-	return sleepWithJitter
-}
-
 func (o *Options) logger() *slog.Logger {
-	if o != nil && o.Logger != nil {
-		return o.Logger
+	if o != nil {
+		return defaultLogger(o.Logger)
 	}
 	return slog.Default()
+}
+
+func defaultLogger(l *slog.Logger) *slog.Logger {
+	if l != nil {
+		return l
+	}
+	return slog.Default()
+}
+
+// jobResult holds the outcome of processing a single document fetch job.
+type jobResult struct {
+	result  Result
+	failure *manifest.FetchFailure
+	ok      bool
+}
+
+// processJob fetches a single document, falling back to a preserved previous copy on failure.
+func processJob(ctx context.Context, rawURL string, opts Options) jobResult {
+	previous := opts.PreviousDocs[rawURL]
+	relativePath := filepath.FromSlash(previous.Path)
+	if relativePath == "" {
+		var err error
+		relativePath, err = links.RelativePath(rawURL, opts.Layout)
+		if err != nil {
+			return jobResult{failure: &manifest.FetchFailure{URL: rawURL, Error: fmt.Sprintf("map URL: %v", err)}}
+		}
+	}
+
+	if opts.RateLimiter != nil {
+		if err := opts.RateLimiter.Wait(ctx); err != nil {
+			return jobResult{}
+		}
+	}
+
+	fetchErr := opts.URLPolicy.Validate(rawURL)
+	if fetchErr == nil {
+		result, err := Document(ctx, rawURL, relativePath, previous, DocumentConfig{
+			Client:      opts.Client,
+			URLPolicy:   opts.URLPolicy,
+			SpoolDir:    opts.SpoolDir,
+			ArchiveRoot: opts.ArchiveRoot,
+			RetrySleep:  opts.RetrySleep,
+		})
+		if err == nil {
+			return jobResult{result: result, ok: true}
+		}
+		fetchErr = err
+	}
+
+	failure := BuildFetchFailure(opts.DiagnosticsDir, rawURL, relativePath, fetchErr)
+	preserved, preservedErr := PreservePreviousDocument(opts.ArchiveRoot, rawURL, relativePath, previous)
+	if preservedErr == nil {
+		failure.PreservedExisting = true
+		return jobResult{result: preserved, failure: &failure, ok: true}
+	}
+	if previous.Path != "" {
+		failure.Error = fmt.Sprintf("%s (failed to preserve previous copy: %v)", failure.Error, preservedErr)
+	}
+	return jobResult{failure: &failure}
 }
 
 // Documents downloads all document URLs concurrently and returns successful results and failures.
@@ -108,14 +160,6 @@ func Documents(ctx context.Context, docURLs []string, opts Options) ([]Result, [
 		}
 	}
 
-	recordFailure := func(jobURL string, failure manifest.FetchFailure) {
-		opts.logger().Warn("fetch failure", "url", jobURL, "error", failure.Error)
-		mu.Lock()
-		failures = append(failures, failure)
-		mu.Unlock()
-		recordCompletion()
-	}
-
 	jobs := make(chan job)
 	for worker := 0; worker < opts.Concurrency; worker++ {
 		wg.Add(1)
@@ -125,69 +169,22 @@ func Documents(ctx context.Context, docURLs []string, opts Options) ([]Result, [
 				select {
 				case <-ctx.Done():
 					return
-				case job, ok := <-jobs:
+				case j, ok := <-jobs:
 					if !ok {
 						return
 					}
 
-					previous := opts.PreviousDocuments[job.url]
-					relativePath := filepath.FromSlash(previous.Path)
-					if relativePath == "" {
-						var err error
-						relativePath, err = links.RelativePath(job.url, opts.Layout)
-						if err != nil {
-							recordFailure(job.url, manifest.FetchFailure{URL: job.url, Error: fmt.Sprintf("map URL: %v", err)})
-							continue
-						}
-					}
-
-					if opts.RateLimiter != nil {
-						if err := opts.RateLimiter.Wait(ctx); err != nil {
-							return
-						}
-					}
-
-					if err := opts.URLPolicy.Validate(job.url); err != nil {
-						failure := manifest.FetchFailure{URL: job.url, Error: err.Error()}
-						preserved, preservedErr := PreservePreviousDocument(opts.ArchiveRoot, job.url, relativePath, previous)
-						if preservedErr == nil {
-							failure.PreservedExisting = true
-							mu.Lock()
-							results[job.index] = preserved
-							succeeded[job.index] = true
-							failures = append(failures, failure)
-							mu.Unlock()
-							recordCompletion()
-							continue
-						}
-						recordFailure(job.url, failure)
-						continue
-					}
-
-					result, err := Document(ctx, opts.Client, opts.URLPolicy, opts.SpoolDir, opts.ArchiveRoot, job.url, relativePath, previous, opts.retrySleep())
-					if err != nil {
-						failure := BuildFetchFailure(opts.DiagnosticsDir, job.url, relativePath, err)
-						preserved, preservedErr := PreservePreviousDocument(opts.ArchiveRoot, job.url, relativePath, previous)
-						if preservedErr == nil {
-							failure.PreservedExisting = true
-							mu.Lock()
-							results[job.index] = preserved
-							succeeded[job.index] = true
-							failures = append(failures, failure)
-							mu.Unlock()
-							recordCompletion()
-							continue
-						}
-						if previous.Path != "" {
-							failure.Error = fmt.Sprintf("%s (failed to preserve previous copy: %v)", failure.Error, preservedErr)
-						}
-						recordFailure(job.url, failure)
-						continue
-					}
+					jr := processJob(ctx, j.url, opts)
 
 					mu.Lock()
-					results[job.index] = result
-					succeeded[job.index] = true
+					if jr.ok {
+						results[j.index] = jr.result
+						succeeded[j.index] = true
+					}
+					if jr.failure != nil {
+						opts.logger().Warn("fetch failure", "url", j.url, "error", jr.failure.Error)
+						failures = append(failures, *jr.failure)
+					}
 					mu.Unlock()
 					recordCompletion()
 				}
@@ -220,23 +217,27 @@ enqueueLoop:
 	return finalResults, failures
 }
 
-// Document downloads a single document URL, using conditional requests and retries as appropriate.
-// If retrySleep is nil, the default sleepWithJitter is used.
-func Document(
-	ctx context.Context,
-	client *http.Client,
-	urlPolicy *policy.URLPolicy,
-	spoolDir string,
-	archiveRoot string,
-	rawURL string,
-	relativePath string,
-	previous manifest.Entry,
-	retrySleep func(context.Context, int) error,
-) (Result, error) {
-	if retrySleep == nil {
-		retrySleep = sleepWithJitter
+// DocumentConfig holds the shared configuration for fetching a single document.
+type DocumentConfig struct {
+	Client      *http.Client
+	URLPolicy   *policy.URLPolicy
+	SpoolDir    string
+	ArchiveRoot string
+	// RetrySleep overrides the retry sleep function. Defaults to sleepWithJitter if nil.
+	RetrySleep func(context.Context, int) error
+}
+
+func (c *DocumentConfig) retrySleep() func(context.Context, int) error {
+	if c != nil && c.RetrySleep != nil {
+		return c.RetrySleep
 	}
-	if err := urlPolicy.Validate(rawURL); err != nil {
+	return sleepWithJitter
+}
+
+// Document downloads a single document URL, using conditional requests and retries as appropriate.
+func Document(ctx context.Context, rawURL string, relativePath string, previous manifest.Entry, cfg DocumentConfig) (Result, error) {
+	retrySleep := cfg.retrySleep()
+	if err := cfg.URLPolicy.Validate(rawURL); err != nil {
 		return Result{}, err
 	}
 
@@ -255,7 +256,7 @@ func Document(
 	}
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		response, err := URL(ctx, client, rawURL, spoolDir, validators)
+		response, err := Get(ctx, cfg.Client, rawURL, cfg.SpoolDir, validators)
 		if err != nil {
 			var transient *TransientHTTPError
 			if errors.As(err, &transient) && attempt+1 < attempts {
@@ -268,12 +269,12 @@ func Document(
 		}
 
 		if response.NotModified {
-			cachedResult, cacheErr := LoadCachedDocument(archiveRoot, rawURL, relativePath, previous, response)
+			cachedResult, cacheErr := LoadCachedDocument(cfg.ArchiveRoot, rawURL, relativePath, previous, response)
 			if cacheErr == nil {
 				return cachedResult, nil
 			}
 
-			response, err = URL(ctx, client, rawURL, spoolDir, Validators{})
+			response, err = Get(ctx, cfg.Client, rawURL, cfg.SpoolDir, Validators{})
 			if err != nil {
 				return Result{}, fmt.Errorf("cache validation failed: %w; refetch also failed: %w", cacheErr, err)
 			}

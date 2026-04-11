@@ -6,6 +6,7 @@ import (
 )
 
 // UnexpectedContentError indicates that a response contained HTML or other non-markdown content.
+// Callers can detect this with errors.As to access response details for diagnostics.
 type UnexpectedContentError struct {
 	Message     string
 	Status      string
@@ -36,6 +37,9 @@ func (w *PrefixCaptureWriter) Write(p []byte) (int, error) {
 }
 
 // EnsureMarkdownResponse returns an UnexpectedContentError if the response appears to be HTML rather than markdown.
+// It first checks contentType (e.g. "text/html"), then falls back to sniffing the leading bytes of the body.
+// The sniff parameter should contain the first few KB of the response body for content detection.
+// The bodyPath and other parameters are stored in the returned error for diagnostic reporting.
 func EnsureMarkdownResponse(status string, contentType string, headers map[string][]string, sniff []byte, bodyPath string) error {
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {

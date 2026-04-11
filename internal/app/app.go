@@ -41,14 +41,17 @@ type Config struct {
 	Logger               *slog.Logger
 }
 
-func (c Config) logger() *slog.Logger {
-	if c.Logger != nil {
-		return c.Logger
+func defaultLogger(l *slog.Logger) *slog.Logger {
+	if l != nil {
+		return l
 	}
 	return slog.Default()
 }
 
+func (c Config) logger() *slog.Logger { return defaultLogger(c.Logger) }
+
 // PartialSyncError reports documents that failed to fetch while others succeeded.
+// Callers can detect this with errors.As to distinguish partial failure from total failure.
 type PartialSyncError struct {
 	Failures []manifest.FetchFailure
 }
@@ -67,9 +70,20 @@ func (e *PartialSyncError) Error() string {
 	return strings.Join(lines, "\n")
 }
 
+func resultToEntry(r fetch.Result) manifest.Entry {
+	return manifest.Entry{
+		URL:            r.URL,
+		Path:           filepath.ToSlash(r.RelativePath),
+		SHA256:         r.SHA256,
+		Bytes:          r.Bytes,
+		LastModifiedAt: r.LastModifiedAt,
+		ETag:           r.ETag,
+	}
+}
+
 // BuildManifest assembles a manifest from the source and document fetch results.
 func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure, discoveredIndexes []fetch.Result) manifest.Manifest {
-	manifestData := manifest.Manifest{
+	m := manifest.Manifest{
 		SourceURL:            source.URL,
 		SourcePath:           filepath.ToSlash(source.RelativePath),
 		SourceSHA256:         source.SHA256,
@@ -81,21 +95,14 @@ func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []mani
 	}
 
 	if len(skipped) > 0 {
-		manifestData.Skipped = append(manifestData.Skipped, skipped...)
+		m.Skipped = append(m.Skipped, skipped...)
 	}
 	if len(failures) > 0 {
-		manifestData.Failures = append(manifestData.Failures, failures...)
+		m.Failures = append(m.Failures, failures...)
 	}
 
 	for _, document := range documents {
-		manifestData.Documents = append(manifestData.Documents, manifest.Entry{
-			URL:            document.URL,
-			Path:           filepath.ToSlash(document.RelativePath),
-			SHA256:         document.SHA256,
-			Bytes:          document.Bytes,
-			LastModifiedAt: document.LastModifiedAt,
-			ETag:           document.ETag,
-		})
+		m.Documents = append(m.Documents, resultToEntry(document))
 	}
 
 	if len(discoveredIndexes) > 0 {
@@ -109,15 +116,15 @@ func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []mani
 				ETag:           idx.ETag,
 			})
 		}
-		manifestData.Sources = sources
+		m.Sources = sources
 	}
 
-	return manifestData
+	return m
 }
 
 // BuildDiagnosticManifest assembles a manifest for error diagnostics, tolerating nil source results.
 func BuildDiagnosticManifest(sourceURL string, sourcePath string, source *fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure) manifest.Manifest {
-	manifestData := manifest.Manifest{
+	m := manifest.Manifest{
 		SourceURL:     sourceURL,
 		SourcePath:    filepath.ToSlash(sourcePath),
 		DocumentCount: len(documents),
@@ -125,35 +132,28 @@ func BuildDiagnosticManifest(sourceURL string, sourcePath string, source *fetch.
 		Failures:      append([]manifest.FetchFailure(nil), failures...),
 	}
 	if source != nil {
-		manifestData.SourceSHA256 = source.SHA256
-		manifestData.SourceLastModifiedAt = source.LastModifiedAt
-		manifestData.SourceETag = source.ETag
+		m.SourceSHA256 = source.SHA256
+		m.SourceLastModifiedAt = source.LastModifiedAt
+		m.SourceETag = source.ETag
 	}
 	if len(skipped) > 0 {
-		manifestData.Skipped = append([]manifest.SkippedEntry(nil), skipped...)
+		m.Skipped = append([]manifest.SkippedEntry(nil), skipped...)
 	}
 	if len(documents) > 0 {
-		manifestData.Documents = make([]manifest.Entry, 0, len(documents))
+		m.Documents = make([]manifest.Entry, 0, len(documents))
 		for _, document := range documents {
-			manifestData.Documents = append(manifestData.Documents, manifest.Entry{
-				URL:            document.URL,
-				Path:           filepath.ToSlash(document.RelativePath),
-				SHA256:         document.SHA256,
-				Bytes:          document.Bytes,
-				LastModifiedAt: document.LastModifiedAt,
-				ETag:           document.ETag,
-			})
+			m.Documents = append(m.Documents, resultToEntry(document))
 		}
 	}
-	return manifestData
+	return m
 }
 
 // WriteDiagnosticManifest writes a diagnostic manifest to disk, logging errors instead of returning them.
-func WriteDiagnosticManifest(manifestPath string, manifestData manifest.Manifest) {
+func WriteDiagnosticManifest(manifestPath string, m manifest.Manifest) {
 	if manifestPath == "" {
 		return
 	}
-	if err := manifest.Write(manifestPath, &manifestData); err != nil {
+	if err := manifest.Write(manifestPath, &m); err != nil {
 		slog.Warn("failed to write diagnostics manifest", "path", manifestPath, "error", err)
 	}
 }
@@ -169,12 +169,7 @@ type DiscoveryConfig struct {
 	Logger       *slog.Logger
 }
 
-func (c DiscoveryConfig) logger() *slog.Logger {
-	if c.Logger != nil {
-		return c.Logger
-	}
-	return slog.Default()
-}
+func (c DiscoveryConfig) logger() *slog.Logger { return defaultLogger(c.Logger) }
 
 // DiscoveryResult holds the output of BFS index discovery.
 type DiscoveryResult struct {
@@ -193,23 +188,25 @@ func normalizeIndexURL(rawURL string) string {
 	return parsed.String()
 }
 
-func skipEntry(skipped *[]manifest.SkippedEntry, rawURL, reason string, err error) {
-	*skipped = append(*skipped, manifest.SkippedEntry{
+func skippedEntry(rawURL, reason string, err error) manifest.SkippedEntry {
+	return manifest.SkippedEntry{
 		URL:    rawURL,
 		Reason: fmt.Sprintf("%s: %v", reason, err),
-	})
+	}
+}
+
+type indexResult struct {
+	DocURLs      []string
+	ChildIndexes []string
+	Skipped      []manifest.SkippedEntry
+	FetchResult  *fetch.Result
 }
 
 // processIndex fetches and parses a single nested index, returning discovered docs and child indexes.
-func processIndex(
-	ctx context.Context,
-	cfg DiscoveryConfig,
-	rawURL string,
-	skipped *[]manifest.SkippedEntry,
-) (docURLs, childIndexes []string, childSkipped []manifest.SkippedEntry, result *fetch.Result, err error) {
+// Errors that prevent processing a single index are returned as skipped entries, not as errors.
+func processIndex(ctx context.Context, cfg DiscoveryConfig, rawURL string) (*indexResult, error) {
 	if err := cfg.URLPolicy.Validate(rawURL); err != nil {
-		skipEntry(skipped, rawURL, "policy", err)
-		return nil, nil, nil, nil, nil
+		return &indexResult{Skipped: []manifest.SkippedEntry{skippedEntry(rawURL, "policy", err)}}, nil
 	}
 
 	relativePath := fmt.Sprintf("sources/%s", links.SourcePath(cfg.Layout))
@@ -224,35 +221,41 @@ func processIndex(
 		}
 	}
 
-	fetchResult, fetchErr := fetch.Document(ctx, cfg.Client, cfg.URLPolicy, cfg.SpoolDir, cfg.ArchiveRoot, rawURL, relativePath, previous, nil)
+	fetchResult, fetchErr := fetch.Document(ctx, rawURL, relativePath, previous, fetch.DocumentConfig{
+		Client:      cfg.Client,
+		URLPolicy:   cfg.URLPolicy,
+		SpoolDir:    cfg.SpoolDir,
+		ArchiveRoot: cfg.ArchiveRoot,
+	})
 	if fetchErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", fetchErr)
-		skipEntry(skipped, rawURL, "fetch failed", fetchErr)
-		return nil, nil, nil, nil, nil
+		return &indexResult{Skipped: []manifest.SkippedEntry{skippedEntry(rawURL, "fetch failed", fetchErr)}}, nil
 	}
 
 	body, readErr := os.ReadFile(fetchResult.LocalPath)
 	if readErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", readErr)
-		skipEntry(skipped, rawURL, "read failed", readErr)
-		return nil, nil, nil, nil, nil
+		return &indexResult{Skipped: []manifest.SkippedEntry{skippedEntry(rawURL, "read failed", readErr)}}, nil
 	}
 
 	childLinks, extractErr := links.Extract(body)
 	if extractErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", extractErr)
-		skipEntry(skipped, rawURL, "no links", extractErr)
-		return nil, nil, nil, nil, nil
+		return &indexResult{Skipped: []manifest.SkippedEntry{skippedEntry(rawURL, "no links", extractErr)}}, nil
 	}
 
 	docs, indexes, partSkipped, partErr := links.Partition(childLinks)
 	if partErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", partErr)
-		skipEntry(skipped, rawURL, "partition error", partErr)
-		return nil, nil, nil, nil, nil
+		return &indexResult{Skipped: []manifest.SkippedEntry{skippedEntry(rawURL, "partition error", partErr)}}, nil
 	}
 
-	return docs, indexes, partSkipped, &fetchResult, nil
+	return &indexResult{
+		DocURLs:      docs,
+		ChildIndexes: indexes,
+		Skipped:      partSkipped,
+		FetchResult:  &fetchResult,
+	}, nil
 }
 
 // DiscoverDocuments performs BFS discovery of nested llms.txt indexes and their linked documents.
@@ -297,22 +300,22 @@ func DiscoverDocuments(
 		}
 		visitedIndexes[normalized] = true
 
-		childDocs, childIndexes, childSkipped, result, err := processIndex(ctx, cfg, rawURL, &skipped)
+		idx, err := processIndex(ctx, cfg, rawURL)
 		if err != nil {
 			return nil, err
 		}
-		if result != nil {
-			indexResults = append(indexResults, *result)
+		if idx.FetchResult != nil {
+			indexResults = append(indexResults, *idx.FetchResult)
 		}
 
-		for _, u := range childDocs {
+		for _, u := range idx.DocURLs {
 			if norm := normalizeIndexURL(u); !seenDocs[norm] {
 				seenDocs[norm] = true
 				docURLs = append(docURLs, u)
 			}
 		}
-		skipped = append(skipped, childSkipped...)
-		for _, u := range childIndexes {
+		skipped = append(skipped, idx.Skipped...)
+		for _, u := range idx.ChildIndexes {
 			if !visitedIndexes[normalizeIndexURL(u)] {
 				queue = append(queue, u)
 			}
@@ -352,29 +355,55 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	previousDocuments := manifest.PreviousDocumentsByURL(previousManifest)
+	previousDocs := manifest.PreviousDocumentsByURL(previousManifest)
 	sourcePath := links.SourcePath(cfg.Layout)
 	sourcePrevious := manifest.PreviousSourceEntry(previousManifest, sourcePath)
 
-	sourceResult, err := fetch.Document(ctx, client, urlPolicy, spoolDir, cfg.ArchiveRoot, cfg.SourceURL, sourcePath, sourcePrevious, nil)
-	if err != nil {
-		failures := []manifest.FetchFailure{fetch.BuildFetchFailure(cfg.DiagnosticsDir, cfg.SourceURL, sourcePath, err)}
-		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, nil, nil, nil, failures))
-		return fmt.Errorf("fetch %s: %w", cfg.SourceURL, err)
+	// Diagnostic state accumulates context for error-path manifest writes.
+	var (
+		diagSource   *fetch.Result
+		diagDocs     []fetch.Result
+		diagSkipped  []manifest.SkippedEntry
+		diagFailures []manifest.FetchFailure
+		runErr       error
+	)
+	defer func() {
+		if runErr != nil {
+			WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(
+				cfg.SourceURL, sourcePath, diagSource, diagDocs, diagSkipped, diagFailures,
+			))
+		}
+	}()
+
+	addFailure := func(err error) {
+		diagFailures = append(diagFailures, manifest.FetchFailure{URL: cfg.SourceURL, Error: err.Error()})
 	}
+
+	sourceResult, err := fetch.Document(ctx, cfg.SourceURL, sourcePath, sourcePrevious, fetch.DocumentConfig{
+		Client:      client,
+		URLPolicy:   urlPolicy,
+		SpoolDir:    spoolDir,
+		ArchiveRoot: cfg.ArchiveRoot,
+	})
+	if err != nil {
+		diagFailures = []manifest.FetchFailure{fetch.BuildFetchFailure(cfg.DiagnosticsDir, cfg.SourceURL, sourcePath, err)}
+		runErr = fmt.Errorf("fetch %s: %w", cfg.SourceURL, err)
+		return runErr
+	}
+	diagSource = &sourceResult
 
 	sourceBody, err := os.ReadFile(sourceResult.LocalPath)
 	if err != nil {
-		failures := []manifest.FetchFailure{{URL: cfg.SourceURL, Error: fmt.Sprintf("read fetched llms.txt: %v", err)}}
-		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, nil, nil, failures))
-		return fmt.Errorf("read fetched llms.txt: %w", err)
+		addFailure(fmt.Errorf("read fetched llms.txt: %w", err))
+		runErr = fmt.Errorf("read fetched llms.txt: %w", err)
+		return runErr
 	}
 
 	extractedLinks, err := links.Extract(sourceBody)
 	if err != nil {
-		failures := []manifest.FetchFailure{{URL: cfg.SourceURL, Error: err.Error()}}
-		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, nil, nil, failures))
-		return err
+		addFailure(err)
+		runErr = err
+		return runErr
 	}
 
 	discovery, err := DiscoverDocuments(ctx, cfg.SourceURL, extractedLinks, DiscoveryConfig{
@@ -383,17 +412,17 @@ func Run(ctx context.Context, cfg Config) error {
 		SpoolDir:     spoolDir,
 		ArchiveRoot:  cfg.ArchiveRoot,
 		Layout:       cfg.Layout,
-		PreviousDocs: previousDocuments,
+		PreviousDocs: previousDocs,
 		Logger:       cfg.Logger,
 	})
 	if err != nil {
-		failures := []manifest.FetchFailure{{URL: cfg.SourceURL, Error: err.Error()}}
-		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, nil, nil, failures))
-		return err
+		addFailure(err)
+		runErr = err
+		return runErr
 	}
 
 	docURLs := discovery.DocURLs
-	skipped := discovery.Skipped
+	diagSkipped = discovery.Skipped
 
 	if len(discovery.IndexResults) > 0 {
 		cfg.logger().Info("discovered nested indexes", "count", len(discovery.IndexResults))
@@ -405,38 +434,41 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	documents, failures := fetch.Documents(ctx, docURLs, fetch.Options{
-		Client:            client,
-		URLPolicy:         urlPolicy,
-		Layout:            cfg.Layout,
-		DiagnosticsDir:    cfg.DiagnosticsDir,
-		SpoolDir:          spoolDir,
-		ArchiveRoot:       cfg.ArchiveRoot,
-		Concurrency:       cfg.Concurrency,
-		RateLimiter:       limiter,
-		PreviousDocuments: previousDocuments,
-		Logger:            cfg.Logger,
+		Client:         client,
+		URLPolicy:      urlPolicy,
+		Layout:         cfg.Layout,
+		DiagnosticsDir: cfg.DiagnosticsDir,
+		SpoolDir:       spoolDir,
+		ArchiveRoot:    cfg.ArchiveRoot,
+		Concurrency:    cfg.Concurrency,
+		RateLimiter:    limiter,
+		PreviousDocs:   previousDocs,
+		Logger:         cfg.Logger,
 	})
+	diagDocs = documents
+	diagFailures = failures
+
 	if err := ctx.Err(); err != nil {
-		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, documents, skipped, failures))
-		return err
+		runErr = err
+		return runErr
 	}
 
-	manifestData := BuildManifest(sourceResult, documents, skipped, failures, discovery.IndexResults)
+	m := BuildManifest(sourceResult, documents, diagSkipped, failures, discovery.IndexResults)
 
 	allResults := make([]fetch.Result, 0, len(documents)+len(discovery.IndexResults))
 	allResults = append(allResults, documents...)
 	allResults = append(allResults, discovery.IndexResults...)
 	if err := stage.Output(cfg.OutputDir, sourceResult, allResults, nil); err != nil {
-		failureWithStage := append([]manifest.FetchFailure(nil), failures...)
-		failureWithStage = append(failureWithStage, manifest.FetchFailure{
+		diagFailures = append(append([]manifest.FetchFailure(nil), failures...), manifest.FetchFailure{
 			URL:   cfg.SourceURL,
 			Error: fmt.Sprintf("stage output: %v", err),
 		})
-		WriteDiagnosticManifest(cfg.ManifestOut, BuildDiagnosticManifest(cfg.SourceURL, sourcePath, &sourceResult, documents, skipped, failureWithStage))
-		return err
+		runErr = err
+		return runErr
 	}
 
-	if err := manifest.Write(cfg.ManifestOut, &manifestData); err != nil {
+	// Success path: no diagnostic manifest needed, clear runErr.
+	if err := manifest.Write(cfg.ManifestOut, &m); err != nil {
 		return err
 	}
 
@@ -444,7 +476,7 @@ func Run(ctx context.Context, cfg Config) error {
 		"Fetched %d markdown documents into %s (%d skipped non-markdown URLs, %d fetch failures)\n",
 		len(documents),
 		cfg.OutputDir,
-		len(skipped),
+		len(diagSkipped),
 		len(failures),
 	)
 
