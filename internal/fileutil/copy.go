@@ -23,9 +23,12 @@ func CopyFile(sourcePath, targetPath string) error {
 		return fmt.Errorf("create target: %w", err)
 	}
 
+	closed := false
 	success := false
 	defer func() {
-		_ = targetFile.Close()
+		if !closed {
+			_ = targetFile.Close()
+		}
 		if !success {
 			_ = os.Remove(targetPath)
 		}
@@ -37,6 +40,7 @@ func CopyFile(sourcePath, targetPath string) error {
 	if err := targetFile.Close(); err != nil {
 		return fmt.Errorf("close target: %w", err)
 	}
+	closed = true
 	// #nosec G302 -- tracked snapshot files are intended to remain world-readable.
 	if err := os.Chmod(targetPath, 0o644); err != nil {
 		return fmt.Errorf("set permissions: %w", err)

@@ -8,12 +8,13 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/f-pisani/llmstxt/internal/fileutil"
 	"github.com/f-pisani/llmstxt/internal/manifest"
 )
 
 // SummarizeExistingFile computes the SHA-256 hash and byte count of a file under root.
 func SummarizeExistingFile(root string, relativePath string) (localPath string, sha256Value string, bytesCount int64, err error) {
-	localPath, err = SafeJoin(root, relativePath)
+	localPath, err = fileutil.SafeJoin(root, relativePath)
 	if err != nil {
 		return "", "", 0, err
 	}

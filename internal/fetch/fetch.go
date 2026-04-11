@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/f-pisani/llmstxt/internal/links"
+	"github.com/f-pisani/llmstxt/internal/logutil"
 	"github.com/f-pisani/llmstxt/internal/manifest"
 	"github.com/f-pisani/llmstxt/internal/policy"
 
@@ -53,14 +54,19 @@ type Validators struct {
 	ETag           string
 }
 
+// ClientConfig holds the shared HTTP client configuration used by both single and batch fetches.
+type ClientConfig struct {
+	Client      *http.Client
+	URLPolicy   *policy.URLPolicy
+	SpoolDir    string
+	ArchiveRoot string
+}
+
 // Options configures a batch document fetch.
 type Options struct {
-	Client         *http.Client
-	URLPolicy      *policy.URLPolicy
+	ClientConfig
 	Layout         string
 	DiagnosticsDir string
-	SpoolDir       string
-	ArchiveRoot    string
 	Concurrency    int
 	PreviousDocs   map[string]manifest.Entry
 	// RateLimiter controls the rate of outbound HTTP requests. Nil means no limit.
@@ -72,14 +78,7 @@ type Options struct {
 
 func (o *Options) logger() *slog.Logger {
 	if o != nil {
-		return defaultLogger(o.Logger)
-	}
-	return slog.Default()
-}
-
-func defaultLogger(l *slog.Logger) *slog.Logger {
-	if l != nil {
-		return l
+		return logutil.Default(o.Logger)
 	}
 	return slog.Default()
 }
@@ -93,7 +92,10 @@ type jobResult struct {
 
 // processJob fetches a single document, falling back to a preserved previous copy on failure.
 func processJob(ctx context.Context, rawURL string, opts Options) jobResult {
-	previous := opts.PreviousDocs[rawURL]
+	var previous manifest.Entry
+	if opts.PreviousDocs != nil {
+		previous = opts.PreviousDocs[rawURL]
+	}
 	relativePath := filepath.FromSlash(previous.Path)
 	if relativePath == "" {
 		var err error
@@ -112,11 +114,8 @@ func processJob(ctx context.Context, rawURL string, opts Options) jobResult {
 	fetchErr := opts.URLPolicy.Validate(rawURL)
 	if fetchErr == nil {
 		result, err := Document(ctx, rawURL, relativePath, previous, DocumentConfig{
-			Client:      opts.Client,
-			URLPolicy:   opts.URLPolicy,
-			SpoolDir:    opts.SpoolDir,
-			ArchiveRoot: opts.ArchiveRoot,
-			RetrySleep:  opts.RetrySleep,
+			ClientConfig: opts.ClientConfig,
+			RetrySleep:   opts.RetrySleep,
 		})
 		if err == nil {
 			return jobResult{result: result, ok: true}
@@ -219,10 +218,7 @@ enqueueLoop:
 
 // DocumentConfig holds the shared configuration for fetching a single document.
 type DocumentConfig struct {
-	Client      *http.Client
-	URLPolicy   *policy.URLPolicy
-	SpoolDir    string
-	ArchiveRoot string
+	ClientConfig
 	// RetrySleep overrides the retry sleep function. Defaults to sleepWithJitter if nil.
 	RetrySleep func(context.Context, int) error
 }

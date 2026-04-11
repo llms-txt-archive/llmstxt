@@ -660,10 +660,12 @@ func TestFetchDocumentStreamsToDiskAndComputesMetadata(t *testing.T) {
 		filepath.Join("docs", "en", "overview.md"),
 		manifest.Entry{},
 		fetch.DocumentConfig{
-			Client:      client,
-			URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-			SpoolDir:    t.TempDir(),
-			ArchiveRoot: t.TempDir(),
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: t.TempDir(),
+			},
 		},
 	)
 	if err != nil {
@@ -707,10 +709,12 @@ func TestFetchDocumentRetriesTransientHTMLForMarkdownURL(t *testing.T) {
 		filepath.Join("docs", "en", "skills.md"),
 		manifest.Entry{},
 		fetch.DocumentConfig{
-			Client:      client,
-			URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-			SpoolDir:    t.TempDir(),
-			ArchiveRoot: t.TempDir(),
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: t.TempDir(),
+			},
 		},
 	)
 	if err != nil {
@@ -763,10 +767,12 @@ func TestFetchDocumentUsesCachedFileOn304(t *testing.T) {
 			ETag:           `"etag-1"`,
 		},
 		fetch.DocumentConfig{
-			Client:      client,
-			URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-			SpoolDir:    t.TempDir(),
-			ArchiveRoot: archiveRoot,
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: archiveRoot,
+			},
 		},
 	)
 	if err != nil {
@@ -815,10 +821,12 @@ func TestFetchDocumentRefetchesOn304CacheMiss(t *testing.T) {
 			ETag:           `"etag-1"`,
 		},
 		fetch.DocumentConfig{
-			Client:      client,
-			URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-			SpoolDir:    t.TempDir(),
-			ArchiveRoot: t.TempDir(),
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: t.TempDir(),
+			},
 		},
 	)
 	if err != nil {
@@ -877,10 +885,12 @@ func TestFetchDocumentRefetchesOn304CacheHashMismatch(t *testing.T) {
 			ETag:           `"etag-1"`,
 		},
 		fetch.DocumentConfig{
-			Client:      client,
-			URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-			SpoolDir:    t.TempDir(),
-			ArchiveRoot: archiveRoot,
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: archiveRoot,
+			},
 		},
 	)
 	if err != nil {
@@ -934,10 +944,12 @@ func TestFetchSourceRefetchesOn304CacheHashMismatch(t *testing.T) {
 			ETag:           `"etag-1"`,
 		},
 		fetch.DocumentConfig{
-			Client:      client,
-			URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
-			SpoolDir:    t.TempDir(),
-			ArchiveRoot: archiveRoot,
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: archiveRoot,
+			},
 		},
 	)
 	if err != nil {
@@ -1084,12 +1096,14 @@ func TestFetchDocumentsPreservesPreviousCopyOnFailure(t *testing.T) {
 		context.Background(),
 		[]string{"https://docs.example.com/docs/en/skills.md"},
 		fetch.Options{
-			Client:         client,
-			URLPolicy:      mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: archiveRoot,
+			},
 			Layout:         links.LayoutRoot,
 			DiagnosticsDir: filepath.Join(t.TempDir(), "diagnostics"),
-			SpoolDir:       t.TempDir(),
-			ArchiveRoot:    archiveRoot,
 			Concurrency:    1,
 			PreviousDocs:   previous,
 		},
@@ -1150,12 +1164,14 @@ func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 		context.Background(),
 		[]string{"https://docs.example.com/docs/en/skills.md"},
 		fetch.Options{
-			Client:         failingClient,
-			URLPolicy:      mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+			ClientConfig: fetch.ClientConfig{
+				Client:      failingClient,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: archiveRoot,
+			},
 			Layout:         links.LayoutRoot,
 			DiagnosticsDir: filepath.Join(t.TempDir(), "diagnostics-one"),
-			SpoolDir:       t.TempDir(),
-			ArchiveRoot:    archiveRoot,
 			Concurrency:    1,
 			PreviousDocs:   previous,
 		},
@@ -1171,12 +1187,14 @@ func TestFetchDocumentsReplacesPreservedCopyAfterLaterSuccess(t *testing.T) {
 		context.Background(),
 		[]string{"https://docs.example.com/docs/en/skills.md"},
 		fetch.Options{
-			Client:         successClient,
-			URLPolicy:      mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+			ClientConfig: fetch.ClientConfig{
+				Client:      successClient,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: archiveRoot,
+			},
 			Layout:         links.LayoutRoot,
 			DiagnosticsDir: filepath.Join(t.TempDir(), "diagnostics-two"),
-			SpoolDir:       t.TempDir(),
-			ArchiveRoot:    archiveRoot,
 			Concurrency:    1,
 			PreviousDocs:   previous,
 		},

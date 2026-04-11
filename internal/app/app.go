@@ -14,6 +14,7 @@ import (
 
 	"github.com/f-pisani/llmstxt/internal/fetch"
 	"github.com/f-pisani/llmstxt/internal/links"
+	"github.com/f-pisani/llmstxt/internal/logutil"
 	"github.com/f-pisani/llmstxt/internal/manifest"
 	"github.com/f-pisani/llmstxt/internal/policy"
 	"github.com/f-pisani/llmstxt/internal/stage"
@@ -41,14 +42,7 @@ type Config struct {
 	Logger               *slog.Logger
 }
 
-func defaultLogger(l *slog.Logger) *slog.Logger {
-	if l != nil {
-		return l
-	}
-	return slog.Default()
-}
-
-func (c Config) logger() *slog.Logger { return defaultLogger(c.Logger) }
+func (c Config) logger() *slog.Logger { return logutil.Default(c.Logger) }
 
 // PartialSyncError reports documents that failed to fetch while others succeeded.
 // Callers can detect this with errors.As to distinguish partial failure from total failure.
@@ -169,7 +163,7 @@ type DiscoveryConfig struct {
 	Logger       *slog.Logger
 }
 
-func (c DiscoveryConfig) logger() *slog.Logger { return defaultLogger(c.Logger) }
+func (c DiscoveryConfig) logger() *slog.Logger { return logutil.Default(c.Logger) }
 
 // DiscoveryResult holds the output of BFS index discovery.
 type DiscoveryResult struct {
@@ -209,7 +203,7 @@ func processIndex(ctx context.Context, cfg DiscoveryConfig, rawURL string) (*ind
 		return &indexResult{Skipped: []manifest.SkippedEntry{skippedEntry(rawURL, "policy", err)}}, nil
 	}
 
-	relativePath := fmt.Sprintf("sources/%s", links.SourcePath(cfg.Layout))
+	relativePath := filepath.Join("sources", links.SourcePath(cfg.Layout))
 	if relPath, relErr := links.RelativePath(rawURL, cfg.Layout); relErr == nil {
 		relativePath = relPath
 	}
@@ -222,10 +216,12 @@ func processIndex(ctx context.Context, cfg DiscoveryConfig, rawURL string) (*ind
 	}
 
 	fetchResult, fetchErr := fetch.Document(ctx, rawURL, relativePath, previous, fetch.DocumentConfig{
-		Client:      cfg.Client,
-		URLPolicy:   cfg.URLPolicy,
-		SpoolDir:    cfg.SpoolDir,
-		ArchiveRoot: cfg.ArchiveRoot,
+		ClientConfig: fetch.ClientConfig{
+			Client:      cfg.Client,
+			URLPolicy:   cfg.URLPolicy,
+			SpoolDir:    cfg.SpoolDir,
+			ArchiveRoot: cfg.ArchiveRoot,
+		},
 	})
 	if fetchErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", fetchErr)
@@ -375,15 +371,19 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}()
 
-	addFailure := func(err error) {
-		diagFailures = append(diagFailures, manifest.FetchFailure{URL: cfg.SourceURL, Error: err.Error()})
+	addFailure := func(url string, err error) {
+		diagFailures = append(diagFailures, manifest.FetchFailure{URL: url, Error: err.Error()})
 	}
 
-	sourceResult, err := fetch.Document(ctx, cfg.SourceURL, sourcePath, sourcePrevious, fetch.DocumentConfig{
+	cc := fetch.ClientConfig{
 		Client:      client,
 		URLPolicy:   urlPolicy,
 		SpoolDir:    spoolDir,
 		ArchiveRoot: cfg.ArchiveRoot,
+	}
+
+	sourceResult, err := fetch.Document(ctx, cfg.SourceURL, sourcePath, sourcePrevious, fetch.DocumentConfig{
+		ClientConfig: cc,
 	})
 	if err != nil {
 		diagFailures = []manifest.FetchFailure{fetch.BuildFetchFailure(cfg.DiagnosticsDir, cfg.SourceURL, sourcePath, err)}
@@ -394,14 +394,14 @@ func Run(ctx context.Context, cfg Config) error {
 
 	sourceBody, err := os.ReadFile(sourceResult.LocalPath)
 	if err != nil {
-		addFailure(fmt.Errorf("read fetched llms.txt: %w", err))
+		addFailure(cfg.SourceURL, fmt.Errorf("read fetched llms.txt: %w", err))
 		runErr = fmt.Errorf("read fetched llms.txt: %w", err)
 		return runErr
 	}
 
 	extractedLinks, err := links.Extract(sourceBody)
 	if err != nil {
-		addFailure(err)
+		addFailure(cfg.SourceURL, err)
 		runErr = err
 		return runErr
 	}
@@ -416,7 +416,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Logger:       cfg.Logger,
 	})
 	if err != nil {
-		addFailure(err)
+		addFailure(cfg.SourceURL, err)
 		runErr = err
 		return runErr
 	}
@@ -434,12 +434,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	documents, failures := fetch.Documents(ctx, docURLs, fetch.Options{
-		Client:         client,
-		URLPolicy:      urlPolicy,
+		ClientConfig:   cc,
 		Layout:         cfg.Layout,
 		DiagnosticsDir: cfg.DiagnosticsDir,
-		SpoolDir:       spoolDir,
-		ArchiveRoot:    cfg.ArchiveRoot,
 		Concurrency:    cfg.Concurrency,
 		RateLimiter:    limiter,
 		PreviousDocs:   previousDocs,
@@ -455,10 +452,16 @@ func Run(ctx context.Context, cfg Config) error {
 
 	m := BuildManifest(sourceResult, documents, diagSkipped, failures, discovery.IndexResults)
 
-	allResults := make([]fetch.Result, 0, len(documents)+len(discovery.IndexResults))
+	allResults := make([]fetch.Result, 0, 1+len(documents)+len(discovery.IndexResults))
+	allResults = append(allResults, sourceResult)
 	allResults = append(allResults, documents...)
 	allResults = append(allResults, discovery.IndexResults...)
-	if err := stage.Output(cfg.OutputDir, sourceResult, allResults, nil); err != nil {
+
+	stageFiles := make([]stage.FileEntry, len(allResults))
+	for i, r := range allResults {
+		stageFiles[i] = stage.FileEntry{RelativePath: r.RelativePath, LocalPath: r.LocalPath}
+	}
+	if err := stage.Output(cfg.OutputDir, stageFiles, nil); err != nil {
 		diagFailures = append(append([]manifest.FetchFailure(nil), failures...), manifest.FetchFailure{
 			URL:   cfg.SourceURL,
 			Error: fmt.Sprintf("stage output: %v", err),
@@ -472,12 +475,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	fmt.Printf(
-		"Fetched %d markdown documents into %s (%d skipped non-markdown URLs, %d fetch failures)\n",
-		len(documents),
-		cfg.OutputDir,
-		len(diagSkipped),
-		len(failures),
+	cfg.logger().Info("sync complete",
+		"documents", len(documents),
+		"output", cfg.OutputDir,
+		"skipped", len(diagSkipped),
+		"failures", len(failures),
 	)
 
 	if len(failures) > 0 {

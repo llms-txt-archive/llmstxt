@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/f-pisani/llmstxt/internal/fetch"
 	"github.com/f-pisani/llmstxt/internal/fileutil"
 )
 
@@ -44,8 +43,14 @@ type Journal struct {
 	Phase     string `json:"phase"`
 }
 
-// Output writes fetched documents to a temporary directory and atomically swaps it into outputDir.
-func Output(outputDir string, source fetch.Result, documents []fetch.Result, opts *Options) error {
+// FileEntry identifies a file to be staged by its relative path and local source path.
+type FileEntry struct {
+	RelativePath string
+	LocalPath    string
+}
+
+// Output writes files to a temporary directory and atomically swaps it into outputDir.
+func Output(outputDir string, files []FileEntry, opts *Options) error {
 	parentDir := filepath.Dir(outputDir)
 	if err := os.MkdirAll(parentDir, 0o750); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
@@ -67,11 +72,8 @@ func Output(outputDir string, source fetch.Result, documents []fetch.Result, opt
 		}
 	}()
 
-	if err := writeResult(tempDir, source); err != nil {
-		return err
-	}
-	for _, document := range documents {
-		if err := writeResult(tempDir, document); err != nil {
+	for _, f := range files {
+		if err := writeFile(tempDir, f); err != nil {
 			return err
 		}
 	}
@@ -86,16 +88,16 @@ func Output(outputDir string, source fetch.Result, documents []fetch.Result, opt
 	return nil
 }
 
-func writeResult(root string, result fetch.Result) error {
-	targetPath, err := fileutil.SafeJoin(root, result.RelativePath)
+func writeFile(root string, f FileEntry) error {
+	targetPath, err := fileutil.SafeJoin(root, f.RelativePath)
 	if err != nil {
-		return fmt.Errorf("validate path for %s: %w", result.RelativePath, err)
+		return fmt.Errorf("validate path for %s: %w", f.RelativePath, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return fmt.Errorf("create directory for %s: %w", targetPath, err)
 	}
 
-	if err := fileutil.CopyFile(result.LocalPath, targetPath); err != nil {
+	if err := fileutil.CopyFile(f.LocalPath, targetPath); err != nil {
 		return fmt.Errorf("write %s: %w", targetPath, err)
 	}
 
