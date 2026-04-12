@@ -639,6 +639,88 @@ func TestReconcileStateJournalWithTempNoMarker(t *testing.T) {
 	}
 }
 
+// ---------- ReconcileState: journal with external temp dir ----------
+
+func TestReconcileStateJournalWithExternalTempDir(t *testing.T) {
+	base := t.TempDir()
+	outputDir := filepath.Join(base, "output")
+
+	// Create a real temp dir outside the managed parent.
+	externalTemp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(externalTemp, "stale.md"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// No completion marker — incomplete staging.
+
+	journal := Journal{
+		TempDir:   externalTemp,
+		OutputDir: outputDir,
+		BackupDir: outputDir + ".bak",
+		Phase:     phaseStaged,
+	}
+	if err := WriteJournal(outputDir, journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReconcileState(outputDir, nil); err != nil {
+		t.Fatalf("ReconcileState: %v", err)
+	}
+
+	// External temp dir should be removed (incomplete staging without marker).
+	if _, err := os.Stat(externalTemp); !os.IsNotExist(err) {
+		t.Error("external temp directory should be removed")
+	}
+	// Journal should be cleaned up.
+	if _, err := os.Stat(JournalPath(outputDir)); !os.IsNotExist(err) {
+		t.Error("journal should be removed after reconcile")
+	}
+}
+
+// ---------- ReconcileState: activate phase with backup only ----------
+
+func TestReconcileStateActivatePhaseWithBackupOnly(t *testing.T) {
+	base := t.TempDir()
+	outputDir := filepath.Join(base, "output")
+	backupDir := outputDir + ".bak"
+	tempDir := filepath.Join(base, "temp-gone")
+
+	// Simulate crash after backup rename but before activation:
+	// backup exists, output does not, temp does not.
+	if err := os.MkdirAll(backupDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "recovered.md"), []byte("recovered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	journal := Journal{
+		TempDir:   tempDir,
+		OutputDir: outputDir,
+		BackupDir: backupDir,
+		Phase:     phaseActivate,
+	}
+	if err := WriteJournal(outputDir, journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReconcileState(outputDir, nil); err != nil {
+		t.Fatalf("ReconcileState: %v", err)
+	}
+
+	// Backup should be restored to outputDir.
+	if _, err := os.Stat(filepath.Join(outputDir, "recovered.md")); err != nil {
+		t.Error("recovered.md should exist in output after backup restore")
+	}
+	// Backup dir should be gone.
+	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
+		t.Error("backup should not exist after restore")
+	}
+	// Journal should be cleaned up.
+	if _, err := os.Stat(JournalPath(outputDir)); !os.IsNotExist(err) {
+		t.Error("journal should be removed after reconcile")
+	}
+}
+
 // ---------- Options.removeAll ----------
 
 func TestOptionsRemoveAllDefault(t *testing.T) {

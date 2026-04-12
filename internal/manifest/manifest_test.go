@@ -95,6 +95,17 @@ func TestLoadVersionZeroBackwardsCompat(t *testing.T) {
 	}
 }
 
+func TestLoadTruncatedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.json")
+	if err := os.WriteFile(path, []byte(`{"source_url":"https://example.com/llms.txt"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load(truncated) expected error, got nil")
+	}
+}
+
 func TestPreviousDocumentsByURL(t *testing.T) {
 	m := &Manifest{
 		Documents: []Entry{

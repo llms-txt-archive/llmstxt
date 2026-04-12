@@ -174,6 +174,39 @@ func TestRelativePathMissingHost(t *testing.T) {
 	}
 }
 
+func TestRelativePathDotDotSegments(t *testing.T) {
+	tests := []struct {
+		rawURL string
+		want   string
+	}{
+		{"https://example.com/docs/../secret/file.md", "secret/file.md"},
+		{"https://example.com/a/b/../../c.md", "c.md"},
+	}
+	for _, tt := range tests {
+		got, err := RelativePath(tt.rawURL, LayoutRoot)
+		if err != nil {
+			t.Fatalf("RelativePath(%q) error = %v", tt.rawURL, err)
+		}
+		if filepath.ToSlash(got) != tt.want {
+			t.Fatalf("RelativePath(%q) = %q, want %q", tt.rawURL, filepath.ToSlash(got), tt.want)
+		}
+	}
+}
+
+func TestExtractMixedMarkdownAndPlainURLs(t *testing.T) {
+	body := []byte("[Doc](https://example.com/a.md)\nhttps://example.com/b.md\n")
+	urls, err := Extract(body)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("Extract() = %d URLs, want 1 (markdown links take precedence)", len(urls))
+	}
+	if urls[0] != "https://example.com/a.md" {
+		t.Fatalf("Extract()[0] = %q, want %q", urls[0], "https://example.com/a.md")
+	}
+}
+
 func TestSourcePath(t *testing.T) {
 	if got := SourcePath(LayoutRoot); got != "llms.txt" {
 		t.Fatalf("SourcePath(root) = %q, want %q", got, "llms.txt")

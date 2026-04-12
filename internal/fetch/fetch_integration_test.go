@@ -2,6 +2,7 @@ package fetch_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	app "github.com/f-pisani/llmstxt/internal/app"
 	"github.com/f-pisani/llmstxt/internal/fetch"
 	"github.com/f-pisani/llmstxt/internal/links"
 	"github.com/f-pisani/llmstxt/internal/manifest"
@@ -528,5 +530,278 @@ func TestDocumentsRateLimiter(t *testing.T) {
 	// With 100 req/s, 3 requests should complete well under 5 seconds.
 	if elapsed > 5*time.Second {
 		t.Fatalf("rate-limited fetch took %v, expected < 5s", elapsed)
+	}
+}
+
+func TestDocumentsPreviousPathTakesPrecedence(t *testing.T) {
+	t.Parallel()
+
+	markdownBody := "# Stable content\n"
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
+		return testResponse(http.StatusOK, map[string]string{
+			"Content-Type": "text/markdown; charset=utf-8",
+		}, markdownBody), nil
+	})
+
+	docs, failures := fetch.Documents(
+		context.Background(),
+		[]string{"https://docs.example.com/new/location.md"},
+		fetch.Options{
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: t.TempDir(),
+			},
+			Layout:      links.LayoutRoot,
+			Concurrency: 1,
+			PreviousDocs: map[string]manifest.Entry{
+				"https://docs.example.com/new/location.md": {
+					URL:    "https://docs.example.com/new/location.md",
+					Path:   "old/location.md",
+					SHA256: fetch.HashBytes([]byte(markdownBody)),
+					Bytes:  int64(len(markdownBody)),
+				},
+			},
+			RetrySleep: noopRetrySleep,
+		},
+	)
+
+	if len(failures) != 0 {
+		t.Fatalf("failures = %v, want none", failures)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("docs len = %d, want 1", len(docs))
+	}
+	if docs[0].RelativePath != "old/location.md" {
+		t.Fatalf("RelativePath = %q, want %q", docs[0].RelativePath, "old/location.md")
+	}
+}
+
+func TestDocumentsOutputOrderMatchesInputOrder(t *testing.T) {
+	t.Parallel()
+
+	urls := []string{
+		"https://docs.example.com/docs/a.md",
+		"https://docs.example.com/docs/b.md",
+		"https://docs.example.com/docs/c.md",
+		"https://docs.example.com/docs/d.md",
+		"https://docs.example.com/docs/e.md",
+	}
+
+	var counter atomic.Int32
+	gate := make(chan struct{})
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		n := counter.Add(1)
+		if n == 1 {
+			// Block the first URL until another request arrives.
+			<-gate
+		} else if n == 2 {
+			// Unblock the first URL once the second request starts.
+			close(gate)
+		}
+		body := fmt.Sprintf("# %s\n", req.URL.Path)
+		return testResponse(http.StatusOK, map[string]string{
+			"Content-Type": "text/markdown; charset=utf-8",
+		}, body), nil
+	})
+
+	docs, failures := fetch.Documents(
+		context.Background(),
+		urls,
+		fetch.Options{
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: t.TempDir(),
+			},
+			Layout:      links.LayoutRoot,
+			Concurrency: 5,
+			RetrySleep:  noopRetrySleep,
+		},
+	)
+
+	if len(failures) != 0 {
+		t.Fatalf("failures = %v, want none", failures)
+	}
+	if len(docs) != len(urls) {
+		t.Fatalf("docs len = %d, want %d", len(docs), len(urls))
+	}
+	for i, u := range urls {
+		if docs[i].URL != u {
+			t.Fatalf("docs[%d].URL = %q, want %q", i, docs[i].URL, u)
+		}
+	}
+}
+
+func TestDocumentMarkdownExhaustsRetriesReturnsUnexpectedContentError(t *testing.T) {
+	t.Parallel()
+
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
+		return testResponse(http.StatusOK, map[string]string{
+			"Content-Type": "text/html; charset=utf-8",
+		}, "<!DOCTYPE html><html><body>error page</body></html>"), nil
+	})
+
+	_, err := fetch.Document(
+		context.Background(),
+		"https://docs.example.com/docs/en/overview.md",
+		filepath.Join("docs", "en", "overview.md"),
+		manifest.Entry{},
+		fetch.DocumentConfig{
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: t.TempDir(),
+			},
+			RetrySleep: noopRetrySleep,
+		},
+	)
+	if err == nil {
+		t.Fatal("fetch.Document() error = nil, want UnexpectedContentError")
+	}
+
+	var unexpected *fetch.UnexpectedContentError
+	if !errors.As(err, &unexpected) {
+		t.Fatalf("error type = %T, want *fetch.UnexpectedContentError", err)
+	}
+}
+
+func TestDocumentsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	urls := make([]string, 10)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("https://docs.example.com/docs/%d.md", i)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var served atomic.Int32
+	client := newTestClient(func(_ *http.Request) (*http.Response, error) {
+		if served.Add(1) >= 3 {
+			cancel()
+		}
+		return testResponse(http.StatusOK, map[string]string{
+			"Content-Type": "text/markdown; charset=utf-8",
+		}, "# Doc\n"), nil
+	})
+
+	done := make(chan struct{})
+	var docs []fetch.Result
+	go func() {
+		defer close(done)
+		docs, _ = fetch.Documents(
+			ctx,
+			urls,
+			fetch.Options{
+				ClientConfig: fetch.ClientConfig{
+					Client:      client,
+					URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+					SpoolDir:    t.TempDir(),
+					ArchiveRoot: t.TempDir(),
+				},
+				Layout:      links.LayoutRoot,
+				Concurrency: 1,
+				RetrySleep:  noopRetrySleep,
+			},
+		)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Documents() did not return within 10 seconds after context cancellation")
+	}
+
+	if len(docs) >= 10 {
+		t.Fatalf("docs len = %d, want < 10 (context was cancelled)", len(docs))
+	}
+	for i, d := range docs {
+		if d.URL == "" {
+			t.Fatalf("docs[%d].URL is empty, want non-empty for all returned results", i)
+		}
+	}
+}
+
+func TestDocumentsPreservedFailureInBuildManifest(t *testing.T) {
+	t.Parallel()
+
+	archiveRoot := t.TempDir()
+	cachedBody := []byte("# Cached doc\n")
+	cachedPath := filepath.Join(archiveRoot, "docs", "failing.md")
+	if err := os.MkdirAll(filepath.Dir(cachedPath), 0o750); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(cachedPath, cachedBody, 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	successBody := "# Success doc\n"
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "failing") {
+			return testResponse(http.StatusOK, map[string]string{
+				"Content-Type": "text/html; charset=utf-8",
+			}, "<!DOCTYPE html><html><body>error</body></html>"), nil
+		}
+		return testResponse(http.StatusOK, map[string]string{
+			"Content-Type": "text/markdown; charset=utf-8",
+		}, successBody), nil
+	})
+
+	previous := map[string]manifest.Entry{
+		"https://docs.example.com/docs/failing.md": {
+			URL:    "https://docs.example.com/docs/failing.md",
+			Path:   "docs/failing.md",
+			SHA256: fetch.HashBytes(cachedBody),
+			Bytes:  int64(len(cachedBody)),
+		},
+	}
+
+	docs, failures := fetch.Documents(
+		context.Background(),
+		[]string{
+			"https://docs.example.com/docs/success.md",
+			"https://docs.example.com/docs/failing.md",
+		},
+		fetch.Options{
+			ClientConfig: fetch.ClientConfig{
+				Client:      client,
+				URLPolicy:   mustPolicy(t, "https://docs.example.com/llms.txt", ""),
+				SpoolDir:    t.TempDir(),
+				ArchiveRoot: archiveRoot,
+			},
+			Layout:         links.LayoutRoot,
+			DiagnosticsDir: filepath.Join(t.TempDir(), "diagnostics"),
+			Concurrency:    1,
+			PreviousDocs:   previous,
+			RetrySleep:     noopRetrySleep,
+		},
+	)
+
+	if len(docs) != 2 {
+		t.Fatalf("docs len = %d, want 2", len(docs))
+	}
+
+	source := fetch.Result{
+		URL:          "https://docs.example.com/llms.txt",
+		RelativePath: "llms.txt",
+		SHA256:       fetch.HashBytes([]byte("source")),
+	}
+
+	m := app.BuildManifest(source, docs, nil, failures, nil)
+
+	if m.DocumentCount != 2 {
+		t.Fatalf("m.DocumentCount = %d, want 2", m.DocumentCount)
+	}
+	if len(m.Failures) != 1 {
+		t.Fatalf("len(m.Failures) = %d, want 1", len(m.Failures))
+	}
+	if !m.Failures[0].PreservedExisting {
+		t.Fatal("m.Failures[0].PreservedExisting = false, want true")
 	}
 }

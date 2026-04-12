@@ -2,7 +2,10 @@ package policy
 
 import (
 	"net"
+	"net/http"
+	"net/url"
 	"testing"
+	"time"
 )
 
 func TestNewURLPolicyValid(t *testing.T) {
@@ -68,5 +71,58 @@ func TestValidateResolvedIPPrivate(t *testing.T) {
 func TestValidateResolvedIPPublic(t *testing.T) {
 	if err := ValidateResolvedIP(net.ParseIP("8.8.8.8")); err != nil {
 		t.Fatalf("ValidateResolvedIP() error = %v", err)
+	}
+}
+
+func TestHTTPClientRedirectRejectsHTTPDowngrade(t *testing.T) {
+	p, err := NewURLPolicy("https://example.com/llms.txt", "")
+	if err != nil {
+		t.Fatalf("NewURLPolicy() error = %v", err)
+	}
+	client := NewHTTPClient(10*time.Second, p)
+
+	redirectURL, _ := url.Parse("http://example.com/doc.md")
+	req := &http.Request{URL: redirectURL}
+	via := []*http.Request{{}} // one prior request
+
+	err = client.CheckRedirect(req, via)
+	if err == nil {
+		t.Fatal("CheckRedirect should reject HTTP downgrade")
+	}
+}
+
+func TestValidateResolvedIPBlocksIPv6(t *testing.T) {
+	tests := []struct {
+		ip      string
+		blocked bool
+	}{
+		{"::1", true},                       // IPv6 loopback
+		{"fe80::1", true},                   // link-local
+		{"fc00::1", true},                   // ULA/private
+		{"2001:db8::1", true},               // documentation range
+		{"2607:f8b0:4004:800::200e", false}, // public Google IPv6
+	}
+	for _, tt := range tests {
+		ip := net.ParseIP(tt.ip)
+		if ip == nil {
+			t.Fatalf("failed to parse IP %q", tt.ip)
+		}
+		err := ValidateResolvedIP(ip)
+		if tt.blocked && err == nil {
+			t.Errorf("ValidateResolvedIP(%s) = nil, want error (blocked)", tt.ip)
+		}
+		if !tt.blocked && err != nil {
+			t.Errorf("ValidateResolvedIP(%s) = %v, want nil (allowed)", tt.ip, err)
+		}
+	}
+}
+
+func TestValidateTrailingDotHost(t *testing.T) {
+	p, err := NewURLPolicy("https://example.com/llms.txt", "")
+	if err != nil {
+		t.Fatalf("NewURLPolicy() error = %v", err)
+	}
+	if err := p.Validate("https://example.com./doc.md"); err != nil {
+		t.Fatalf("Validate(trailing dot) error = %v", err)
 	}
 }
