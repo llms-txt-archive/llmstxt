@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/f-pisani/llmstxt/internal/app"
-	"github.com/f-pisani/llmstxt/internal/links"
+	"github.com/llms-txt-archive/llmstxt/internal/app"
+	"github.com/llms-txt-archive/llmstxt/internal/links"
 )
 
 const (

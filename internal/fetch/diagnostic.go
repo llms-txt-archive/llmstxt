@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/f-pisani/llmstxt/internal/fileutil"
-	"github.com/f-pisani/llmstxt/internal/manifest"
+	"github.com/llms-txt-archive/llmstxt/internal/fileutil"
+	"github.com/llms-txt-archive/llmstxt/internal/manifest"
 )
 
 // BuildFetchFailure creates a FetchFailure record, writing diagnostic files for unexpected content errors.

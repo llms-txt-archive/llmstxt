@@ -25,7 +25,7 @@ This is the **tool repo**. It builds the crawler and workflow that archive repos
 
 ## Go module
 
-The module is `github.com/f-pisani/llmstxt`. Import paths use `github.com/f-pisani/llmstxt/internal/...`.
+The module is `github.com/llms-txt-archive/llmstxt`. Import paths use `github.com/llms-txt-archive/llmstxt/internal/...`.
 
 ## Testing
 

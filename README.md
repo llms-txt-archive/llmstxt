@@ -126,7 +126,7 @@ on:
 
 jobs:
   sync:
-    uses: f-pisani/llmstxt/.github/workflows/archive-sync.yml@v1.0.0
+    uses: llms-txt-archive/llmstxt/.github/workflows/archive-sync.yml@v1.0.0
     with:
       source_url: "https://example.com/llms.txt"
       site_name: "Example Docs"

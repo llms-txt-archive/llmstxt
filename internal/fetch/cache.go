@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/f-pisani/llmstxt/internal/fileutil"
-	"github.com/f-pisani/llmstxt/internal/manifest"
+	"github.com/llms-txt-archive/llmstxt/internal/fileutil"
+	"github.com/llms-txt-archive/llmstxt/internal/manifest"
 )
 
 // SummarizeExistingFile computes the SHA-256 hash and byte count of a file under root.

@@ -1,4 +1,4 @@
-module github.com/f-pisani/llmstxt
+module github.com/llms-txt-archive/llmstxt
 
 go 1.25.0
 

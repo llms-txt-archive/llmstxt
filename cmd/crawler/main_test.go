@@ -18,13 +18,13 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/f-pisani/llmstxt/internal/app"
-	"github.com/f-pisani/llmstxt/internal/fetch"
-	"github.com/f-pisani/llmstxt/internal/fileutil"
-	"github.com/f-pisani/llmstxt/internal/links"
-	"github.com/f-pisani/llmstxt/internal/manifest"
-	"github.com/f-pisani/llmstxt/internal/policy"
-	"github.com/f-pisani/llmstxt/internal/stage"
+	"github.com/llms-txt-archive/llmstxt/internal/app"
+	"github.com/llms-txt-archive/llmstxt/internal/fetch"
+	"github.com/llms-txt-archive/llmstxt/internal/fileutil"
+	"github.com/llms-txt-archive/llmstxt/internal/links"
+	"github.com/llms-txt-archive/llmstxt/internal/manifest"
+	"github.com/llms-txt-archive/llmstxt/internal/policy"
+	"github.com/llms-txt-archive/llmstxt/internal/stage"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

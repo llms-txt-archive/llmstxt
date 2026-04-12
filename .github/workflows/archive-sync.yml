@@ -60,7 +60,7 @@ jobs:
       - name: Check out tool repository
         uses: actions/checkout@v5
         with:
-          repository: f-pisani/llmstxt
+          repository: llms-txt-archive/llmstxt
           ref: ${{ inputs.tool_ref }}
           path: .toolrepo
           fetch-depth: 1

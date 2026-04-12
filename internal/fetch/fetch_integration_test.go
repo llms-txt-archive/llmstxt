@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	app "github.com/f-pisani/llmstxt/internal/app"
-	"github.com/f-pisani/llmstxt/internal/fetch"
-	"github.com/f-pisani/llmstxt/internal/links"
-	"github.com/f-pisani/llmstxt/internal/manifest"
-	"github.com/f-pisani/llmstxt/internal/policy"
+	app "github.com/llms-txt-archive/llmstxt/internal/app"
+	"github.com/llms-txt-archive/llmstxt/internal/fetch"
+	"github.com/llms-txt-archive/llmstxt/internal/links"
+	"github.com/llms-txt-archive/llmstxt/internal/manifest"
+	"github.com/llms-txt-archive/llmstxt/internal/policy"
 
 	"golang.org/x/time/rate"
 )

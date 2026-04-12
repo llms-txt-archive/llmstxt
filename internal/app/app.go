@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/f-pisani/llmstxt/internal/fetch"
-	"github.com/f-pisani/llmstxt/internal/links"
-	"github.com/f-pisani/llmstxt/internal/logutil"
-	"github.com/f-pisani/llmstxt/internal/manifest"
-	"github.com/f-pisani/llmstxt/internal/policy"
-	"github.com/f-pisani/llmstxt/internal/stage"
+	"github.com/llms-txt-archive/llmstxt/internal/fetch"
+	"github.com/llms-txt-archive/llmstxt/internal/links"
+	"github.com/llms-txt-archive/llmstxt/internal/logutil"
+	"github.com/llms-txt-archive/llmstxt/internal/manifest"
+	"github.com/llms-txt-archive/llmstxt/internal/policy"
+	"github.com/llms-txt-archive/llmstxt/internal/stage"
 
 	"golang.org/x/time/rate"
 )

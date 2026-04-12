@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f-pisani/llmstxt/internal/fetch"
-	"github.com/f-pisani/llmstxt/internal/manifest"
+	"github.com/llms-txt-archive/llmstxt/internal/fetch"
+	"github.com/llms-txt-archive/llmstxt/internal/manifest"
 )
 
 func TestResultToEntry(t *testing.T) {

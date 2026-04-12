@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f-pisani/llmstxt/internal/app"
-	"github.com/f-pisani/llmstxt/internal/links"
-	"github.com/f-pisani/llmstxt/internal/policy"
+	"github.com/llms-txt-archive/llmstxt/internal/app"
+	"github.com/llms-txt-archive/llmstxt/internal/links"
+	"github.com/llms-txt-archive/llmstxt/internal/policy"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

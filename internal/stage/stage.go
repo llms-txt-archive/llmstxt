@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/f-pisani/llmstxt/internal/fileutil"
+	"github.com/llms-txt-archive/llmstxt/internal/fileutil"
 )
 
 const (
