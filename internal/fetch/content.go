@@ -42,7 +42,12 @@ func (w *PrefixCaptureWriter) Write(p []byte) (int, error) {
 // The bodyPath and other parameters are stored in the returned error for diagnostic reporting.
 func EnsureMarkdownResponse(status string, contentType string, headers map[string][]string, sniff []byte, bodyPath string) error {
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+	htmlContentType := mediaType == "text/html" || mediaType == "application/xhtml+xml"
+
+	// Some servers (e.g. Next.js-based doc sites) return Content-Type: text/html
+	// even when the body is actually markdown. Only reject when the body also
+	// looks like an HTML document.
+	if htmlContentType && LooksLikeHTMLDocument(sniff) {
 		return &UnexpectedContentError{
 			Message:     fmt.Sprintf("expected markdown response but received %s", mediaType),
 			Status:      status,
@@ -53,7 +58,7 @@ func EnsureMarkdownResponse(status string, contentType string, headers map[strin
 		}
 	}
 
-	if LooksLikeHTMLDocument(sniff) {
+	if !htmlContentType && LooksLikeHTMLDocument(sniff) {
 		return &UnexpectedContentError{
 			Message:     "expected markdown response but received HTML document",
 			Status:      status,

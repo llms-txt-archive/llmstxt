@@ -5,10 +5,11 @@ import (
 	"testing"
 )
 
-func TestEnsureMarkdownResponseHTML(t *testing.T) {
-	err := EnsureMarkdownResponse("200 OK", "text/html", nil, nil, "")
+func TestEnsureMarkdownResponseHTMLContentTypeWithHTMLBody(t *testing.T) {
+	sniff := []byte("<!DOCTYPE html><html><body>not found</body></html>")
+	err := EnsureMarkdownResponse("200 OK", "text/html", nil, sniff, "")
 	if err == nil {
-		t.Fatal("expected error for HTML content-type")
+		t.Fatal("expected error for HTML content-type with HTML body")
 	}
 	var unexpected *UnexpectedContentError
 	if !errors.As(err, &unexpected) {
@@ -16,10 +17,19 @@ func TestEnsureMarkdownResponseHTML(t *testing.T) {
 	}
 }
 
-func TestEnsureMarkdownResponseXHTML(t *testing.T) {
-	err := EnsureMarkdownResponse("200 OK", "application/xhtml+xml", nil, nil, "")
+func TestEnsureMarkdownResponseHTMLContentTypeWithMarkdownBody(t *testing.T) {
+	sniff := []byte("# API Reference\n\nThis is the API reference.")
+	err := EnsureMarkdownResponse("200 OK", "text/html", nil, sniff, "")
+	if err != nil {
+		t.Fatalf("unexpected error: servers may return text/html for markdown content: %v", err)
+	}
+}
+
+func TestEnsureMarkdownResponseXHTMLWithHTMLBody(t *testing.T) {
+	sniff := []byte("<!DOCTYPE html><html><body>page</body></html>")
+	err := EnsureMarkdownResponse("200 OK", "application/xhtml+xml", nil, sniff, "")
 	if err == nil {
-		t.Fatal("expected error for XHTML content-type")
+		t.Fatal("expected error for XHTML content-type with HTML body")
 	}
 }
 
