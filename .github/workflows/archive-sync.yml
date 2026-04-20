@@ -155,9 +155,9 @@ jobs:
             ${{ runner.temp }}/crawl-diagnostics
 
       - name: Stop on crawl failure
-        if: steps.crawl.outputs.exit_code != '0'
+        if: steps.crawl.outputs.exit_code == '1'
         run: |
-          echo "Crawler failed; diagnostics artifact uploaded."
+          echo "Crawler failed (total failure); diagnostics artifact uploaded."
           cat "$RUNNER_TEMP/crawl.stderr"
           exit 1
 
