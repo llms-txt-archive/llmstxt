@@ -154,22 +154,24 @@ func WriteDiagnosticManifest(manifestPath string, m manifest.Manifest) {
 
 // DiscoveryConfig holds the dependencies for BFS index discovery.
 type DiscoveryConfig struct {
-	Client       *http.Client
-	URLPolicy    *policy.URLPolicy
-	SpoolDir     string
-	ArchiveRoot  string
-	Layout       string
-	PreviousDocs map[string]manifest.Entry
-	Logger       *slog.Logger
+	Client          *http.Client
+	URLPolicy       *policy.URLPolicy
+	SpoolDir        string
+	ArchiveRoot     string
+	Layout          string
+	PreviousDocs    map[string]manifest.Entry
+	PreviousSources map[string][]string // index URL → doc URLs from previous run
+	Logger          *slog.Logger
 }
 
 func (c DiscoveryConfig) logger() *slog.Logger { return logutil.Default(c.Logger) }
 
 // DiscoveryResult holds the output of BFS index discovery.
 type DiscoveryResult struct {
-	DocURLs      []string
-	Skipped      []manifest.SkippedEntry
-	IndexResults []fetch.Result
+	DocURLs       []string
+	Skipped       []manifest.SkippedEntry
+	IndexResults  []fetch.Result
+	IndexFailures []manifest.FetchFailure
 }
 
 // normalizeIndexURL strips the fragment from a URL for dedup purposes.
@@ -194,6 +196,8 @@ type indexResult struct {
 	ChildIndexes []string
 	Skipped      []manifest.SkippedEntry
 	FetchResult  *fetch.Result
+	FetchFailed  bool   // true when the index could not be fetched
+	FailError    string // error message for the failure
 }
 
 // processIndex fetches and parses a single nested index, returning discovered docs and child indexes.
@@ -225,7 +229,11 @@ func processIndex(ctx context.Context, cfg DiscoveryConfig, rawURL string) (*ind
 	})
 	if fetchErr != nil {
 		cfg.logger().Warn("skipping nested index", "url", rawURL, "error", fetchErr)
-		return &indexResult{Skipped: []manifest.SkippedEntry{skippedEntry(rawURL, "fetch failed", fetchErr)}}, nil
+		return &indexResult{
+			Skipped:     []manifest.SkippedEntry{skippedEntry(rawURL, "fetch failed", fetchErr)},
+			FetchFailed: true,
+			FailError:   fetchErr.Error(),
+		}, nil
 	}
 
 	body, readErr := os.ReadFile(fetchResult.LocalPath)
@@ -278,6 +286,7 @@ func DiscoverDocuments(
 	queue = append(queue, indexQueue...)
 
 	var indexResults []fetch.Result
+	var indexFailures []manifest.FetchFailure
 
 	for i := 0; i < len(queue); i++ {
 		if ctx.Err() != nil {
@@ -304,6 +313,23 @@ func DiscoverDocuments(
 			indexResults = append(indexResults, *idx.FetchResult)
 		}
 
+		// When a nested index fails, record the failure and preserve
+		// previously known doc URLs so they are not silently dropped.
+		if idx.FetchFailed {
+			indexFailures = append(indexFailures, manifest.FetchFailure{
+				URL:   rawURL,
+				Error: idx.FailError,
+			})
+			if cfg.PreviousSources != nil {
+				for _, u := range cfg.PreviousSources[rawURL] {
+					if norm := normalizeIndexURL(u); !seenDocs[norm] {
+						seenDocs[norm] = true
+						docURLs = append(docURLs, u)
+					}
+				}
+			}
+		}
+
 		for _, u := range idx.DocURLs {
 			if norm := normalizeIndexURL(u); !seenDocs[norm] {
 				seenDocs[norm] = true
@@ -319,9 +345,10 @@ func DiscoverDocuments(
 	}
 
 	return &DiscoveryResult{
-		DocURLs:      docURLs,
-		Skipped:      skipped,
-		IndexResults: indexResults,
+		DocURLs:       docURLs,
+		Skipped:       skipped,
+		IndexResults:  indexResults,
+		IndexFailures: indexFailures,
 	}, nil
 }
 
@@ -407,13 +434,14 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	discovery, err := DiscoverDocuments(ctx, cfg.SourceURL, extractedLinks, DiscoveryConfig{
-		Client:       client,
-		URLPolicy:    urlPolicy,
-		SpoolDir:     spoolDir,
-		ArchiveRoot:  cfg.ArchiveRoot,
-		Layout:       cfg.Layout,
-		PreviousDocs: previousDocs,
-		Logger:       cfg.Logger,
+		Client:          client,
+		URLPolicy:       urlPolicy,
+		SpoolDir:        spoolDir,
+		ArchiveRoot:     cfg.ArchiveRoot,
+		Layout:          cfg.Layout,
+		PreviousDocs:    previousDocs,
+		PreviousSources: manifest.PreviousSourceDocURLs(previousManifest),
+		Logger:          cfg.Logger,
 	})
 	if err != nil {
 		addFailure(cfg.SourceURL, err)
@@ -423,6 +451,11 @@ func Run(ctx context.Context, cfg Config) error {
 
 	docURLs := discovery.DocURLs
 	diagSkipped = discovery.Skipped
+
+	if len(discovery.IndexFailures) > 0 {
+		cfg.logger().Warn("nested index fetch failures", "count", len(discovery.IndexFailures))
+		diagFailures = append(diagFailures, discovery.IndexFailures...)
+	}
 
 	if len(discovery.IndexResults) > 0 {
 		cfg.logger().Info("discovered nested indexes", "count", len(discovery.IndexResults))

@@ -123,6 +123,32 @@ func PreviousDocumentsByURL(manifestData *Manifest) map[string]Entry {
 	return documents
 }
 
+// PreviousSourceDocURLs builds a map from each nested index URL to the doc URLs
+// that were discovered through it in the previous run. This allows the caller to
+// preserve previously known docs when a nested index is temporarily unreachable.
+// The mapping is approximate: it maps every document to the primary source and
+// every source to its own URL. A future manifest version could record this
+// relationship explicitly.
+func PreviousSourceDocURLs(manifestData *Manifest) map[string][]string {
+	if manifestData == nil || len(manifestData.Sources) == 0 {
+		return nil
+	}
+
+	// Without per-index provenance tracking, we cannot know which docs came
+	// from which nested index. Return all doc URLs for every source so that
+	// a failed index at least triggers preservation of previously known docs.
+	allDocURLs := make([]string, 0, len(manifestData.Documents))
+	for _, doc := range manifestData.Documents {
+		allDocURLs = append(allDocURLs, doc.URL)
+	}
+
+	result := make(map[string][]string, len(manifestData.Sources))
+	for _, src := range manifestData.Sources {
+		result[src.URL] = allDocURLs
+	}
+	return result
+}
+
 // PreviousSourceEntry returns the source entry from a previous manifest, using fallbackPath if no path is recorded.
 func PreviousSourceEntry(manifestData *Manifest, fallbackPath string) Entry {
 	if manifestData == nil {

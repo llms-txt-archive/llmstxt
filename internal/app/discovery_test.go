@@ -10,6 +10,7 @@ import (
 
 	"github.com/llms-txt-archive/llmstxt/internal/app"
 	"github.com/llms-txt-archive/llmstxt/internal/links"
+	"github.com/llms-txt-archive/llmstxt/internal/manifest"
 	"github.com/llms-txt-archive/llmstxt/internal/policy"
 )
 
@@ -190,6 +191,137 @@ func TestDiscoverDocumentsCrossHostBlocked(t *testing.T) {
 	}
 	if !foundSkipped {
 		t.Fatalf("cross-host index not in skipped list: %v", result.Skipped)
+	}
+}
+
+func TestDiscoverDocumentsNestedIndexFailureReportsFailure(t *testing.T) {
+	t.Parallel()
+
+	// Root links to one doc directly and one nested index.
+	// The nested index returns a 500 error.
+	// The nested index previously provided docs/only-here.md.
+	rootBody := "- [Doc](https://docs.example.com/docs/direct.md)\n- [Nested](https://docs.example.com/api/llms.txt)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/llms.txt":
+			return testResponse(500, nil, "internal server error"), nil
+		default:
+			return testResponse(404, nil, "not found"), nil
+		}
+	})
+
+	pol := mustPolicy(t, "https://docs.example.com/llms.txt", "")
+	extractedLinks, _ := links.Extract([]byte(rootBody))
+
+	result, err := app.DiscoverDocuments(
+		context.Background(), "https://docs.example.com/llms.txt", extractedLinks, app.DiscoveryConfig{
+			Client:      client,
+			URLPolicy:   pol,
+			SpoolDir:    t.TempDir(),
+			ArchiveRoot: t.TempDir(),
+			Layout:      links.LayoutRoot,
+		},
+	)
+	if err != nil {
+		t.Fatalf("DiscoverDocuments() error = %v", err)
+	}
+
+	// The directly linked doc should still be discovered.
+	if len(result.DocURLs) != 1 || result.DocURLs[0] != "https://docs.example.com/docs/direct.md" {
+		t.Fatalf("DocURLs = %v, want [https://docs.example.com/docs/direct.md]", result.DocURLs)
+	}
+
+	// The failed nested index should appear in IndexFailures, not just Skipped.
+	if len(result.IndexFailures) == 0 {
+		t.Fatal("IndexFailures is empty; nested index fetch failure should be reported")
+	}
+	found := false
+	for _, f := range result.IndexFailures {
+		if f.URL == "https://docs.example.com/api/llms.txt" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("IndexFailures does not contain the failed nested index URL: %v", result.IndexFailures)
+	}
+}
+
+func TestDiscoverDocumentsNestedIndexFailurePreservesPreviousDocs(t *testing.T) {
+	t.Parallel()
+
+	// Root links to one doc directly and one nested index.
+	// The nested index returns a 500 error.
+	// The previous manifest had docs from that nested index.
+	rootBody := "- [Doc](https://docs.example.com/docs/direct.md)\n- [Nested](https://docs.example.com/api/llms.txt)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/llms.txt":
+			return testResponse(500, nil, "internal server error"), nil
+		default:
+			return testResponse(404, nil, "not found"), nil
+		}
+	})
+
+	pol := mustPolicy(t, "https://docs.example.com/llms.txt", "")
+	extractedLinks, _ := links.Extract([]byte(rootBody))
+
+	// Simulate a previous manifest where the nested index provided two docs.
+	previousDocs := map[string]manifest.Entry{
+		"https://docs.example.com/docs/only-via-index.md": {
+			URL:    "https://docs.example.com/docs/only-via-index.md",
+			Path:   "docs/only-via-index.md",
+			SHA256: "prev-hash-1",
+			Bytes:  100,
+		},
+		"https://docs.example.com/docs/also-via-index.md": {
+			URL:    "https://docs.example.com/docs/also-via-index.md",
+			Path:   "docs/also-via-index.md",
+			SHA256: "prev-hash-2",
+			Bytes:  200,
+		},
+	}
+
+	// Record the nested index as a previous source so the system knows
+	// which docs came from which index.
+	previousSources := map[string][]string{
+		"https://docs.example.com/api/llms.txt": {
+			"https://docs.example.com/docs/only-via-index.md",
+			"https://docs.example.com/docs/also-via-index.md",
+		},
+	}
+
+	result, err := app.DiscoverDocuments(
+		context.Background(), "https://docs.example.com/llms.txt", extractedLinks, app.DiscoveryConfig{
+			Client:          client,
+			URLPolicy:       pol,
+			SpoolDir:        t.TempDir(),
+			ArchiveRoot:     t.TempDir(),
+			Layout:          links.LayoutRoot,
+			PreviousDocs:    previousDocs,
+			PreviousSources: previousSources,
+		},
+	)
+	if err != nil {
+		t.Fatalf("DiscoverDocuments() error = %v", err)
+	}
+
+	// Should preserve previously known docs from the failed index.
+	docSet := make(map[string]bool, len(result.DocURLs))
+	for _, u := range result.DocURLs {
+		docSet[u] = true
+	}
+
+	if !docSet["https://docs.example.com/docs/direct.md"] {
+		t.Error("missing directly linked doc")
+	}
+	if !docSet["https://docs.example.com/docs/only-via-index.md"] {
+		t.Error("missing previously known doc from failed index: only-via-index.md")
+	}
+	if !docSet["https://docs.example.com/docs/also-via-index.md"] {
+		t.Error("missing previously known doc from failed index: also-via-index.md")
 	}
 }
 

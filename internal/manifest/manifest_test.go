@@ -129,6 +129,49 @@ func TestPreviousDocumentsByURLNil(t *testing.T) {
 	}
 }
 
+func TestPreviousSourceDocURLsNil(t *testing.T) {
+	result := PreviousSourceDocURLs(nil)
+	if result != nil {
+		t.Fatalf("PreviousSourceDocURLs(nil) = %v, want nil", result)
+	}
+}
+
+func TestPreviousSourceDocURLsNoSources(t *testing.T) {
+	m := &Manifest{
+		Documents: []Entry{{URL: "https://example.com/a.md"}},
+	}
+	result := PreviousSourceDocURLs(m)
+	if result != nil {
+		t.Fatalf("PreviousSourceDocURLs(no sources) = %v, want nil", result)
+	}
+}
+
+func TestPreviousSourceDocURLsMapsAllDocsToEachSource(t *testing.T) {
+	m := &Manifest{
+		Documents: []Entry{
+			{URL: "https://example.com/a.md"},
+			{URL: "https://example.com/b.md"},
+		},
+		Sources: []SourceEntry{
+			{URL: "https://example.com/api/llms.txt"},
+			{URL: "https://example.com/v2/llms.txt"},
+		},
+	}
+	result := PreviousSourceDocURLs(m)
+	if len(result) != 2 {
+		t.Fatalf("got %d sources, want 2", len(result))
+	}
+	for _, srcURL := range []string{"https://example.com/api/llms.txt", "https://example.com/v2/llms.txt"} {
+		docs, ok := result[srcURL]
+		if !ok {
+			t.Fatalf("missing source %s", srcURL)
+		}
+		if len(docs) != 2 {
+			t.Fatalf("source %s has %d docs, want 2", srcURL, len(docs))
+		}
+	}
+}
+
 func TestPreviousSourceEntry(t *testing.T) {
 	m := &Manifest{
 		SourceURL:    "https://example.com/llms.txt",
