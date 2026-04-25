@@ -19,7 +19,7 @@ This is the **tool repo**. It builds the crawler and workflow that archive repos
 ## Rules
 
 - **`manifest.json` is a release asset.** Never git-track it. It's uploaded on release creation and downloaded from the previous release for conditional requests.
-- **The archive repo contract is sacred.** `archive-sync.yml` outputs raw `.md` at root + generated `README.md`. Changing this structure breaks all consumer repos.
+- **The archive repo contract is sacred.** `archive-sync.yml` outputs the `llms.txt` source, raw `.md` documents, any discovered nested index files, and a generated `README.md`. Changing this structure breaks all consumer repos.
 - **Codex validation is security-hardened.** The validator (`validate_codex_release.py`) rejects prompt injection, placeholder text, and instruction-following patterns. Do not weaken these checks.
 - **No fetched documents in this repo.** The `/archive/` directory is gitignored. All generated output belongs in archive repos.
 
