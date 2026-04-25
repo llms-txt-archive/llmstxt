@@ -1964,7 +1964,7 @@ func TestBuildManifestPopulatesSources(t *testing.T) {
 		{URL: "https://example.com/sdk/llms.txt", RelativePath: "pages/example.com/sdk/llms.txt", SHA256: "ghi789"},
 	}
 
-	m := app.BuildManifest(source, nil, nil, nil, indexes)
+	m := app.BuildManifest(source, nil, nil, nil, indexes, nil)
 
 	if len(m.Sources) != 2 {
 		t.Fatalf("got %d sources, want 2", len(m.Sources))
@@ -1987,7 +1987,7 @@ func TestBuildManifestNoSourcesWhenEmpty(t *testing.T) {
 		SHA256:       "abc123",
 	}
 
-	m := app.BuildManifest(source, nil, nil, nil, nil)
+	m := app.BuildManifest(source, nil, nil, nil, nil, nil)
 
 	if m.Sources != nil {
 		t.Fatalf("got sources %v, want nil", m.Sources)

@@ -96,7 +96,7 @@ func TestBuildManifest(t *testing.T) {
 		{URL: "https://example.com/sub/llms.txt", RelativePath: "sources/sub-llms.txt", SHA256: "idx-sha", ETag: `"idx-etag"`},
 	}
 
-	m := BuildManifest(source, docs, skipped, failures, indexes)
+	m := BuildManifest(source, docs, skipped, failures, indexes, nil)
 
 	if m.SourceURL != source.URL {
 		t.Errorf("SourceURL = %q, want %q", m.SourceURL, source.URL)
@@ -142,14 +142,14 @@ func TestBuildManifest(t *testing.T) {
 	}
 
 	t.Run("no discovered indexes", func(t *testing.T) {
-		m2 := BuildManifest(source, docs, nil, nil, nil)
+		m2 := BuildManifest(source, docs, nil, nil, nil, nil)
 		if m2.Sources != nil {
 			t.Errorf("Sources should be nil when no discovered indexes, got %v", m2.Sources)
 		}
 	})
 
 	t.Run("no skipped or failures", func(t *testing.T) {
-		m3 := BuildManifest(source, docs, nil, nil, nil)
+		m3 := BuildManifest(source, docs, nil, nil, nil, nil)
 		if m3.Skipped != nil {
 			t.Errorf("Skipped should be nil, got %v", m3.Skipped)
 		}
@@ -375,6 +375,60 @@ func TestPartialSyncErrorError(t *testing.T) {
 			t.Errorf("expected '1 fetches failed' prefix, got %q", msg)
 		}
 	})
+}
+
+func TestBuildManifestPreservesFailedSources(t *testing.T) {
+	source := fetch.Result{
+		URL:          "https://example.com/llms.txt",
+		RelativePath: "llms.txt",
+		SHA256:       "src-sha",
+	}
+
+	// A nested index failed — it should still appear in Sources
+	// so the next run can preserve docs via PreviousSourceDocURLs.
+	failedSources := []manifest.SourceEntry{
+		{URL: "https://example.com/api/llms.txt", Path: "api/llms.txt"},
+	}
+
+	m := BuildManifest(source, nil, nil, nil, nil, failedSources)
+
+	if len(m.Sources) != 1 {
+		t.Fatalf("Sources = %d, want 1 (failed source should be preserved)", len(m.Sources))
+	}
+	if m.Sources[0].URL != "https://example.com/api/llms.txt" {
+		t.Errorf("Sources[0].URL = %q, want failed index URL", m.Sources[0].URL)
+	}
+}
+
+func TestBuildManifestMergesSuccessfulAndFailedSources(t *testing.T) {
+	source := fetch.Result{
+		URL:          "https://example.com/llms.txt",
+		RelativePath: "llms.txt",
+		SHA256:       "src-sha",
+	}
+
+	successIndexes := []fetch.Result{
+		{URL: "https://example.com/v1/llms.txt", RelativePath: "v1/llms.txt", SHA256: "idx-1"},
+	}
+	failedSources := []manifest.SourceEntry{
+		{URL: "https://example.com/v2/llms.txt", Path: "v2/llms.txt"},
+	}
+
+	m := BuildManifest(source, nil, nil, nil, successIndexes, failedSources)
+
+	if len(m.Sources) != 2 {
+		t.Fatalf("Sources = %d, want 2 (1 successful + 1 failed)", len(m.Sources))
+	}
+	urls := map[string]bool{}
+	for _, s := range m.Sources {
+		urls[s.URL] = true
+	}
+	if !urls["https://example.com/v1/llms.txt"] {
+		t.Error("missing successful index in Sources")
+	}
+	if !urls["https://example.com/v2/llms.txt"] {
+		t.Error("missing failed index in Sources")
+	}
 }
 
 func TestDefaultLogger(t *testing.T) {

@@ -76,7 +76,9 @@ func resultToEntry(r fetch.Result) manifest.Entry {
 }
 
 // BuildManifest assembles a manifest from the source and document fetch results.
-func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure, discoveredIndexes []fetch.Result) manifest.Manifest {
+// previousFailedSources are nested index sources that failed to fetch but should
+// be preserved in the manifest so that the next run can still use PreviousSourceDocURLs.
+func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []manifest.SkippedEntry, failures []manifest.FetchFailure, discoveredIndexes []fetch.Result, previousFailedSources []manifest.SourceEntry) manifest.Manifest {
 	m := manifest.Manifest{
 		SourceURL:            source.URL,
 		SourcePath:           filepath.ToSlash(source.RelativePath),
@@ -99,8 +101,8 @@ func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []mani
 		m.Documents = append(m.Documents, resultToEntry(document))
 	}
 
-	if len(discoveredIndexes) > 0 {
-		sources := make([]manifest.SourceEntry, 0, len(discoveredIndexes))
+	if len(discoveredIndexes) > 0 || len(previousFailedSources) > 0 {
+		sources := make([]manifest.SourceEntry, 0, len(discoveredIndexes)+len(previousFailedSources))
 		for _, idx := range discoveredIndexes {
 			sources = append(sources, manifest.SourceEntry{
 				URL:            idx.URL,
@@ -110,6 +112,7 @@ func BuildManifest(source fetch.Result, documents []fetch.Result, skipped []mani
 				ETag:           idx.ETag,
 			})
 		}
+		sources = append(sources, previousFailedSources...)
 		m.Sources = sources
 	}
 
@@ -466,7 +469,7 @@ func Run(ctx context.Context, cfg Config) error {
 		limiter = rate.NewLimiter(rate.Limit(cfg.RateLimit), int(cfg.RateLimit)+1)
 	}
 
-	documents, failures := fetch.Documents(ctx, docURLs, fetch.Options{
+	documents, docFailures := fetch.Documents(ctx, docURLs, fetch.Options{
 		ClientConfig:   cc,
 		Layout:         cfg.Layout,
 		DiagnosticsDir: cfg.DiagnosticsDir,
@@ -476,14 +479,34 @@ func Run(ctx context.Context, cfg Config) error {
 		Logger:         cfg.Logger,
 	})
 	diagDocs = documents
-	diagFailures = failures
+
+	// Merge index failures and document failures into a single list.
+	allFailures := make([]manifest.FetchFailure, 0, len(diagFailures)+len(docFailures))
+	allFailures = append(allFailures, diagFailures...) // includes IndexFailures
+	allFailures = append(allFailures, docFailures...)
+	diagFailures = allFailures
 
 	if err := ctx.Err(); err != nil {
 		runErr = err
 		return runErr
 	}
 
-	m := BuildManifest(sourceResult, documents, diagSkipped, failures, discovery.IndexResults)
+	// Carry forward previously known sources that failed to fetch so
+	// PreviousSourceDocURLs can preserve their docs on the next run.
+	var failedSources []manifest.SourceEntry
+	if previousManifest != nil && len(discovery.IndexFailures) > 0 {
+		failedURLs := make(map[string]bool, len(discovery.IndexFailures))
+		for _, f := range discovery.IndexFailures {
+			failedURLs[f.URL] = true
+		}
+		for _, src := range previousManifest.Sources {
+			if failedURLs[src.URL] {
+				failedSources = append(failedSources, src)
+			}
+		}
+	}
+
+	m := BuildManifest(sourceResult, documents, diagSkipped, allFailures, discovery.IndexResults, failedSources)
 
 	allResults := make([]fetch.Result, 0, 1+len(documents)+len(discovery.IndexResults))
 	allResults = append(allResults, sourceResult)
@@ -495,7 +518,7 @@ func Run(ctx context.Context, cfg Config) error {
 		stageFiles[i] = stage.FileEntry{RelativePath: r.RelativePath, LocalPath: r.LocalPath}
 	}
 	if err := stage.Output(cfg.OutputDir, stageFiles, nil); err != nil {
-		diagFailures = append(append([]manifest.FetchFailure(nil), failures...), manifest.FetchFailure{
+		diagFailures = append(append([]manifest.FetchFailure(nil), allFailures...), manifest.FetchFailure{
 			URL:   cfg.SourceURL,
 			Error: fmt.Sprintf("stage output: %v", err),
 		})
@@ -512,11 +535,11 @@ func Run(ctx context.Context, cfg Config) error {
 		"documents", len(documents),
 		"output", cfg.OutputDir,
 		"skipped", len(diagSkipped),
-		"failures", len(failures),
+		"failures", len(allFailures),
 	)
 
-	if len(failures) > 0 {
-		return &PartialSyncError{Failures: failures}
+	if len(allFailures) > 0 {
+		return &PartialSyncError{Failures: allFailures}
 	}
 
 	return nil

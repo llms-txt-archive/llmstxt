@@ -793,7 +793,7 @@ func TestDocumentsPreservedFailureInBuildManifest(t *testing.T) {
 		SHA256:       fetch.HashBytes([]byte("source")),
 	}
 
-	m := app.BuildManifest(source, docs, nil, failures, nil)
+	m := app.BuildManifest(source, docs, nil, failures, nil, nil)
 
 	if m.DocumentCount != 2 {
 		t.Fatalf("m.DocumentCount = %d, want 2", m.DocumentCount)
