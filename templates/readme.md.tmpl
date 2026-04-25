@@ -1,27 +1,25 @@
 # {{ .Title }}
 
-This repository is auto-generated and updated by CI from the source `llms.txt` index. It tracks raw Markdown files in git so upstream documentation changes are visible in normal diffs.
+Versioned mirror of [{{ .SiteName }}]({{ .SiteURL }}) documentation. Updated {{ .ScheduleLabel }} from [`llms.txt`]({{ .SourceURL }}).
 
-## Source
+Every change to the upstream docs produces a git commit and a GitHub release, so you can diff any two points in time.
 
-- Site: [{{ .SiteName }}]({{ .SiteURL }})
-- `llms.txt`: [{{ .SourceURL }}]({{ .SourceURL }})
-- Sync schedule: {{ .ScheduleLabel }}
-- Tracked Markdown documents: {{ .DocumentCount }}
-- Skipped non-Markdown URLs: {{ .SkippedCount }}
+| | |
+|---|---|
+| **Source** | [{{ .SourceURL }}]({{ .SourceURL }}) |
+| **Documents** | {{ .DocumentCount }} Markdown files |
+| **Schedule** | {{ .ScheduleLabel }} |
 
-## How It Works
+## How it works
 
-- Only `.md` links listed in `llms.txt` are mirrored into this repository.
-- Raw Markdown files are tracked in git.
-- `manifest.json` is not committed. It is attached to each GitHub Release and used as the last successful crawl state for conditional requests.
+A [crawler](https://github.com/llms-txt-archive/llmstxt) reads the `llms.txt` index, fetches every linked `.md` file, and commits the result. The `manifest.json` attached to each release tracks ETags and hashes for conditional requests.
 
-## Latest Releases
+## Releases
 
-| Release | Published | Link |
-| --- | --- | --- |
+| Tag | Date | Summary |
+|-----|------|---------|
 {{- range .Releases }}
 | `{{ .TagName }}` | {{ .PublishedLabel }} | [{{ .Name }}]({{ .HTMLURL }}) |
 {{- else }}
-| _none_ | _n/a_ | _n/a_ |
+| _none_ | | |
 {{- end }}
