@@ -5,9 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 )
+
+// normalizeSourceURL strips the fragment from a URL for consistent map lookups.
+func normalizeSourceURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	parsed.Fragment = ""
+	return parsed.String()
+}
 
 // SourceEntry records a nested llms.txt index discovered during recursive crawling.
 type SourceEntry struct {
@@ -144,7 +155,7 @@ func PreviousSourceDocURLs(manifestData *Manifest) map[string][]string {
 
 	result := make(map[string][]string, len(manifestData.Sources))
 	for _, src := range manifestData.Sources {
-		result[src.URL] = allDocURLs
+		result[normalizeSourceURL(src.URL)] = allDocURLs
 	}
 	return result
 }

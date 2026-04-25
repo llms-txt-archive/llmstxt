@@ -325,6 +325,56 @@ func TestDiscoverDocumentsNestedIndexFailurePreservesPreviousDocs(t *testing.T) 
 	}
 }
 
+func TestDiscoverDocumentsNestedIndexFailureMatchesWithFragment(t *testing.T) {
+	t.Parallel()
+
+	// Root links to a nested index with a fragment.
+	// The previous manifest stored the index without a fragment.
+	// The lookup should still match after normalization.
+	rootBody := "- [Doc](https://docs.example.com/docs/direct.md)\n- [Nested](https://docs.example.com/api/llms.txt#section)\n"
+
+	client := newTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/llms.txt":
+			return testResponse(500, nil, "internal server error"), nil
+		default:
+			return testResponse(404, nil, "not found"), nil
+		}
+	})
+
+	pol := mustPolicy(t, "https://docs.example.com/llms.txt", "")
+	extractedLinks, _ := links.Extract([]byte(rootBody))
+
+	// Previous manifest stored the index URL without fragment.
+	previousSources := map[string][]string{
+		"https://docs.example.com/api/llms.txt": {
+			"https://docs.example.com/docs/from-index.md",
+		},
+	}
+
+	result, err := app.DiscoverDocuments(
+		context.Background(), "https://docs.example.com/llms.txt", extractedLinks, app.DiscoveryConfig{
+			Client:          client,
+			URLPolicy:       pol,
+			SpoolDir:        t.TempDir(),
+			ArchiveRoot:     t.TempDir(),
+			Layout:          links.LayoutRoot,
+			PreviousSources: previousSources,
+		},
+	)
+	if err != nil {
+		t.Fatalf("DiscoverDocuments() error = %v", err)
+	}
+
+	docSet := make(map[string]bool, len(result.DocURLs))
+	for _, u := range result.DocURLs {
+		docSet[u] = true
+	}
+	if !docSet["https://docs.example.com/docs/from-index.md"] {
+		t.Error("previously known doc not preserved despite fragment mismatch in index URL")
+	}
+}
+
 func TestDiscoverDocumentsCapReached(t *testing.T) {
 	t.Parallel()
 

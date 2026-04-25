@@ -324,7 +324,7 @@ func DiscoverDocuments(
 				Error: idx.FailError,
 			})
 			if cfg.PreviousSources != nil {
-				for _, u := range cfg.PreviousSources[rawURL] {
+				for _, u := range cfg.PreviousSources[normalized] {
 					if norm := normalizeIndexURL(u); !seenDocs[norm] {
 						seenDocs[norm] = true
 						docURLs = append(docURLs, u)
@@ -497,10 +497,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if previousManifest != nil && len(discovery.IndexFailures) > 0 {
 		failedURLs := make(map[string]bool, len(discovery.IndexFailures))
 		for _, f := range discovery.IndexFailures {
-			failedURLs[f.URL] = true
+			failedURLs[normalizeIndexURL(f.URL)] = true
 		}
 		for _, src := range previousManifest.Sources {
-			if failedURLs[src.URL] {
+			if failedURLs[normalizeIndexURL(src.URL)] {
 				failedSources = append(failedSources, src)
 			}
 		}
