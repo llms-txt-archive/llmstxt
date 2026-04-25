@@ -60,7 +60,7 @@ flowchart TB
 - BFS discovery of nested `llms.txt` indexes (capped at 50 to prevent runaway crawling)
 - Concurrent fetching with configurable worker count and optional rate limiting (`-rate-limit`)
 - Conditional requests via `If-None-Match` / `If-Modified-Since` using the previous manifest
-- Retries transient HTTP errors (5xx, 429) with exponential backoff and `Retry-After` support
+- Retries transient HTTP errors (5xx, 429) with exponential backoff
 - Response body size capped at 256 MiB per document
 - HTTPS-only with SSRF protection (blocks private/loopback IPs, validates DNS resolution)
 - Content validation: rejects `.md` URLs that return HTML (CDN error pages, login redirects)
@@ -101,7 +101,8 @@ go run ./cmd/readmegen \
   -source-url "https://example.com/llms.txt" \
   -schedule-label "Hourly" \
   -document-count 42 \
-  -skipped-count 3
+  -skipped-count 3 \
+  -releases-json releases.json
 ```
 
 ## Development
